@@ -4,7 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/mcp-meet.svg)](https://www.npmjs.com/package/mcp-meet)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-If like me you hate running google apps locally because they kill your battery life and you prefer to run the native apple apps, you will know that scheduling calendar events is really annoying with google meet. If you install this mcp you can just ask claude to schedule the event for you and it will schedule it in your apple calendar and generate a google meet link.
+If like me you hate running google apps locally because they kill your battery life and you prefer to run the native apple apps, you will know that scheduling calendar events is really annoying with google meet. with this mcp you can just ask claude to schedule the event for you and it will schedule it in your apple calendar and generate a google meet link.
 
 ## Features
 
