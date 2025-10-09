@@ -1,0 +1,10 @@
+# Default owner for everything in the repo
+* @znz-systems
+
+# GitHub Actions and CI/CD workflows
+/.github/ @znz-systems
+
+# Package and dependency management
+/package.json @znz-systems
+/pnpm-lock.yaml @znz-systems
+

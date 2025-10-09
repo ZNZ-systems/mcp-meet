@@ -1,5 +1,5 @@
 {
-  "name": "mcp-meet",
+  "name": "@znz-systems/mcp-meet",
   "version": "0.3.0",
   "description": "MCP server for one-click Google Meet scheduling and Apple Calendar mirroring",
   "type": "module",
@@ -15,6 +15,7 @@
     "LICENSE",
     "package.json"
   ],
+  "sideEffects": false,
   "engines": {
     "node": ">=18"
   },
@@ -33,7 +34,18 @@
     "cli": "tsx src/index.ts cli",
     "build": "tsc",
     "prepublishOnly": "pnpm run build && node scripts/make-cli-wrapper.mjs",
-    "release": "npm version patch && git push origin main --tags"
+
+    "version:patch": "npm version patch",
+    "version:minor": "npm version minor",
+    "version:major": "npm version major",
+
+    "release": "npm run version:patch && git push origin main --tags",
+    "publish:npm": "npm publish --access public --registry=https://registry.npmjs.org/",
+    "publish:gh": "npm publish --registry=https://npm.pkg.github.com/",
+    "publish:all": "npm run publish:npm && npm run publish:gh"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.19.0",

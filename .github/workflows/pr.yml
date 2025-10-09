@@ -1,0 +1,49 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  validate:
+    name: Validate PR
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check package.json version
+        run: |
+          echo "Checking if package.json version follows semver..."
+          node -e "const pkg = require('./package.json'); if (!/^\d+\.\d+\.\d+$/.test(pkg.version)) { console.error('Invalid version format'); process.exit(1); }"
+
+      - name: Validate TypeScript config
+        run: |
+          echo "Validating tsconfig.json..."
+          pnpm exec tsc --showConfig > /dev/null
+
+      - name: Check for uncommitted build artifacts
+        run: |
+          if [ -n "$(git status --porcelain dist/)" ]; then
+            echo "Error: dist/ directory has uncommitted changes"
+            git status dist/
+            exit 1
+          fi
+
