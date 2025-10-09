@@ -38,6 +38,9 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      - name: Generate CLI wrapper
+        run: node scripts/make-cli-wrapper.mjs
+
       - name: Check build artifacts
         run: |
           ls -la dist/
