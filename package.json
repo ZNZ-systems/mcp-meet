@@ -52,7 +52,7 @@
     "dotenv": "^16.4.5",
     "googleapis": "^139.0.0",
     "open": "^10.2.0",
-    "zod": "^3.23.8"
+    "zod": "^4.1.12"
   },
   "devDependencies": {
     "@types/node": "^22.7.5",
