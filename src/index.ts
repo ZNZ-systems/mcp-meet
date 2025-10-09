@@ -44,7 +44,7 @@ function pickContiguous(
 async function startMcp() {
   const server = new McpServer({
     name: 'mcp-meet',
-    version: '0.1.0'
+    version: '0.2.0'
   });
 
   // Tool: search_invitees
