@@ -57,15 +57,17 @@ async function startMcp() {
       inputSchema: {
         query: z.string(),
         limit: z.number().int().positive().optional()
-      },
-      outputSchema: {
-        results: z.array(z.object({ name: z.string(), email: z.string().email() }))
       }
+      // No outputSchema (prevents schema crashes in some SDK builds)
     },
     async ({ query, limit }) => {
       const out = await searchInvitees(query, limit ?? 10);
       const payload = { results: out };
-      return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+      return {
+        content: [
+          { type: 'text' as const, text: `✅ Found ${out.length} contact(s) for "${query}".\n\n${JSON.stringify(payload, null, 2)}` }
+        ]
+      };
     }
   );
 
@@ -80,10 +82,8 @@ async function startMcp() {
         windowStartISO: z.string(),
         windowEndISO: z.string(),
         slotMinutes: z.number().int().positive().optional()
-      },
-      outputSchema: {
-        results: z.array(z.object({ startISO: z.string(), endISO: z.string() }))
       }
+      // No outputSchema
     },
     async ({ attendees, windowStartISO, windowEndISO, slotMinutes }) => {
       const calendars = await freeBusy(windowStartISO, windowEndISO, attendees);
@@ -96,7 +96,15 @@ async function startMcp() {
       });
       const top = slots.slice(0, 50);
       const payload = { results: top };
-      return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+      const human =
+        top.length === 0
+          ? '❌ No common free slots in the window.'
+          : `✅ ${top.length} slot(s) found. Showing up to 50.`;
+      return {
+        content: [
+          { type: 'text' as const, text: `${human}\n\n${JSON.stringify(payload, null, 2)}` }
+        ]
+      };
     }
   );
 
@@ -119,11 +127,8 @@ async function startMcp() {
           })
         ),
         appleCalendarName: z.string().optional()
-      },
-      outputSchema: {
-        meetUrl: z.string().url().optional(),
-        eventHtml: z.string().url().optional()
       }
+      // No outputSchema
     },
     async ({ title, description, startISO, endISO, attendees, appleCalendarName }) => {
       const result = await createMeetEvent({
@@ -145,7 +150,11 @@ async function startMcp() {
       });
 
       const payload = { meetUrl: result.meetUrl, eventHtml: result.htmlLink };
-      return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+      return {
+        content: [
+          { type: 'text' as const, text: `✅ Meeting created.\n🔗 Meet: ${result.meetUrl}\n\n${JSON.stringify(payload, null, 2)}` }
+        ]
+      };
     }
   );
 
@@ -164,12 +173,8 @@ async function startMcp() {
         windowStartISO: z.string(),
         windowEndISO: z.string(),
         appleCalendarName: z.string().optional()
-      },
-      outputSchema: {
-        scheduled: z.object({ startISO: z.string(), endISO: z.string() }),
-        meetUrl: z.string().url().optional(),
-        eventHtml: z.string().url().optional()
       }
+      // No outputSchema
     },
     async ({
       title,
@@ -183,6 +188,7 @@ async function startMcp() {
       const calendars = await freeBusy(windowStartISO, windowEndISO, attendees);
       const busyMap = googleFreeBusyToBusyMap(calendars);
 
+      // Build slots on a small grid to find a contiguous span of durationMinutes
       const tryMinutes = Math.min(30, Math.max(5, Math.floor(durationMinutes / 6)));
       const grid = computeCommonFree({
         windowStartISO,
@@ -193,7 +199,9 @@ async function startMcp() {
 
       const pick = pickContiguous(grid, durationMinutes);
       if (!pick) {
-        return { content: [{ type: 'text', text: 'No common slot found in the window.' }] };
+        return {
+          content: [{ type: 'text' as const, text: '❌ No common slot found in the window.' }]
+        };
       }
 
       const result = await createMeetEvent({
@@ -219,7 +227,14 @@ async function startMcp() {
         meetUrl: result.meetUrl,
         eventHtml: result.htmlLink
       };
-      return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `✅ Scheduled "${title}" from ${pick.startISO} → ${pick.endISO}\n🔗 Meet: ${result.meetUrl}\n\n${JSON.stringify(payload, null, 2)}`
+          }
+        ]
+      };
     }
   );
 

@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@modelcontextprotocol/sdk':
-        specifier: ^1.1.0
+        specifier: ^1.19.0
         version: 1.19.1
       date-fns:
         specifier: ^4.1.0
