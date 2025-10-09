@@ -65,7 +65,10 @@ async function startMcp() {
       const payload = { results: out };
       return {
         content: [
-          { type: 'text' as const, text: `✅ Found ${out.length} contact(s) for "${query}".\n\n${JSON.stringify(payload, null, 2)}` }
+          { 
+            type: 'text', 
+            text: `✅ Found ${out.length} contact(s) for "${query}".\n\n${JSON.stringify(payload, null, 2)}` 
+          } as const
         ]
       };
     }
@@ -102,7 +105,7 @@ async function startMcp() {
           : `✅ ${top.length} slot(s) found. Showing up to 50.`;
       return {
         content: [
-          { type: 'text' as const, text: `${human}\n\n${JSON.stringify(payload, null, 2)}` }
+          { type: 'text', text: `${human}\n\n${JSON.stringify(payload, null, 2)}` } as const
         ]
       };
     }
@@ -152,7 +155,7 @@ async function startMcp() {
       const payload = { meetUrl: result.meetUrl, eventHtml: result.htmlLink };
       return {
         content: [
-          { type: 'text' as const, text: `✅ Meeting created.\n🔗 Meet: ${result.meetUrl}\n\n${JSON.stringify(payload, null, 2)}` }
+          { type: 'text', text: `✅ Meeting created.\n🔗 Meet: ${result.meetUrl}\n\n${JSON.stringify(payload, null, 2)}` } as const
         ]
       };
     }
@@ -200,7 +203,7 @@ async function startMcp() {
       const pick = pickContiguous(grid, durationMinutes);
       if (!pick) {
         return {
-          content: [{ type: 'text' as const, text: '❌ No common slot found in the window.' }]
+          content: [{ type: 'text', text: '❌ No common slot found in the window.' } as const]
         };
       }
 
@@ -230,9 +233,9 @@ async function startMcp() {
       return {
         content: [
           {
-            type: 'text' as const,
+            type: 'text',
             text: `✅ Scheduled "${title}" from ${pick.startISO} → ${pick.endISO}\n🔗 Meet: ${result.meetUrl}\n\n${JSON.stringify(payload, null, 2)}`
-          }
+          } as const
         ]
       };
     }
