@@ -8,12 +8,12 @@ If like me you hate running google apps locally because they kill your battery l
 
 ## Features
 
-- 🔍 **Contact Search** - Find people in your Google Contacts by name or email
-- 📅 **Smart Availability** - Check free/busy status across multiple calendars and attendees
-- 🎯 **Common Slots** - Find times when everyone is actually available
-- 🤝 **One-Click Scheduling** - Automatically find the best slot and book it
-- 🔗 **Google Meet Links** - Every meeting comes with a Meet link ready to go
-- 🍎 **Apple Calendar Sync** - Meetings automatically appear in your macOS Calendar app
+-  **Contact Search** - Find people in your Google Contacts by name or email
+-  **Smart Availability** - Check free/busy status across multiple calendars and attendees
+-  **Common Slots** - Find times when everyone is actually available
+-  **One-Click Scheduling** - Automatically find the best slot and book it
+-  **Google Meet Links** - Every meeting comes with a Meet link ready to go
+-  **Apple Calendar Sync** - Meetings automatically appear in your macOS Calendar app
 
 ## How it works
 
