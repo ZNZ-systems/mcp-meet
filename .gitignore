@@ -4,5 +4,7 @@ dist/
 .env.local
 .DS_Store
 *.log
+.npmrc
+.google.tokens.json
 
 node_modules
