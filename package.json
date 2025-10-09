@@ -1,12 +1,12 @@
 {
-  "name": "@znz-systems/mcp-meet",
-  "version": "0.3.0",
+  "name": "mcp-meet",
+  "version": "0.4.0",
   "description": "MCP server for one-click Google Meet scheduling and Apple Calendar mirroring",
   "type": "module",
   "private": false,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "mcpName": "io.github.znz-systems/mcp-meet",
+  "mcpName": "io.github.pzep1/mcp-meet",
   "bin": {
     "mcp-meet": "dist/cli.js"
   },

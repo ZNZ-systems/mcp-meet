@@ -215,3 +215,168 @@ export async function createMeetEvent({
     event
   };
 }
+
+// -----------------------------------------------------------------------------
+// CALENDAR API — List Meetings
+// -----------------------------------------------------------------------------
+export async function listMeetings(
+  timeMinISO: string,
+  timeMaxISO: string,
+  maxResults = 50
+) {
+  const { calendar } = await getGoogle();
+
+  const resp = await calendar.events.list({
+    calendarId: 'primary',
+    timeMin: timeMinISO,
+    timeMax: timeMaxISO,
+    maxResults,
+    singleEvents: true,
+    orderBy: 'startTime'
+  });
+
+  const events = resp.data.items || [];
+  
+  // Filter to only events with Meet links
+  const meetEvents = events
+    .filter((e) => {
+      const hasMeet = 
+        e.conferenceData?.entryPoints?.some((p) => p.entryPointType === 'video') ||
+        e.hangoutLink;
+      return hasMeet;
+    })
+    .map((e) => {
+      const meetUrl =
+        e.conferenceData?.entryPoints?.find((p) => p.entryPointType === 'video')?.uri ||
+        e.hangoutLink ||
+        '';
+      
+      return {
+        id: e.id!,
+        title: e.summary || '(No title)',
+        description: e.description || '',
+        startISO: e.start?.dateTime || e.start?.date || '',
+        endISO: e.end?.dateTime || e.end?.date || '',
+        meetUrl,
+        attendees: e.attendees?.map((a) => ({
+          email: a.email || '',
+          displayName: a.displayName || '',
+          responseStatus: a.responseStatus || ''
+        })) || [],
+        htmlLink: e.htmlLink || ''
+      };
+    });
+
+  return meetEvents;
+}
+
+// -----------------------------------------------------------------------------
+// CALENDAR API — Get Meeting Details
+// -----------------------------------------------------------------------------
+export async function getMeetingDetails(eventId: string) {
+  const { calendar } = await getGoogle();
+
+  const resp = await calendar.events.get({
+    calendarId: 'primary',
+    eventId
+  });
+
+  const event = resp.data;
+  const meetUrl =
+    event.conferenceData?.entryPoints?.find((p) => p.entryPointType === 'video')?.uri ||
+    event.hangoutLink ||
+    '';
+
+  return {
+    id: event.id!,
+    title: event.summary || '(No title)',
+    description: event.description || '',
+    startISO: event.start?.dateTime || event.start?.date || '',
+    endISO: event.end?.dateTime || event.end?.date || '',
+    meetUrl,
+    attendees: event.attendees?.map((a) => ({
+      email: a.email || '',
+      displayName: a.displayName || '',
+      responseStatus: a.responseStatus || ''
+    })) || [],
+    htmlLink: event.htmlLink || '',
+    created: event.created || '',
+    updated: event.updated || '',
+    status: event.status || '',
+    location: event.location || ''
+  };
+}
+
+// -----------------------------------------------------------------------------
+// CALENDAR API — Update Meeting
+// -----------------------------------------------------------------------------
+export async function updateMeetEvent(
+  eventId: string,
+  updates: {
+    summary?: string;
+    description?: string;
+    startISO?: string;
+    endISO?: string;
+    attendees?: { email: string; displayName?: string }[];
+  }
+) {
+  const { calendar } = await getGoogle();
+
+  // Build the update payload
+  const requestBody: any = {};
+  
+  if (updates.summary !== undefined) {
+    requestBody.summary = updates.summary;
+  }
+  if (updates.description !== undefined) {
+    requestBody.description = updates.description;
+  }
+  if (updates.startISO !== undefined) {
+    requestBody.start = { dateTime: updates.startISO };
+  }
+  if (updates.endISO !== undefined) {
+    requestBody.end = { dateTime: updates.endISO };
+  }
+  if (updates.attendees !== undefined) {
+    requestBody.attendees = updates.attendees.map((a) => ({
+      email: a.email,
+      displayName: a.displayName
+    }));
+  }
+
+  const resp = await calendar.events.patch({
+    calendarId: 'primary',
+    eventId,
+    conferenceDataVersion: 1,
+    sendUpdates: 'all',
+    requestBody
+  });
+
+  const event = resp.data;
+  const meetUrl =
+    event.conferenceData?.entryPoints?.find((p) => p.entryPointType === 'video')?.uri ||
+    event.hangoutLink ||
+    '';
+
+  return {
+    id: event.id!,
+    htmlLink: event.htmlLink!,
+    meetUrl,
+    event
+  };
+}
+
+// -----------------------------------------------------------------------------
+// CALENDAR API — Delete Meeting
+// -----------------------------------------------------------------------------
+export async function deleteMeetEvent(eventId: string) {
+  const { calendar } = await getGoogle();
+
+  await calendar.events.delete({
+    calendarId: 'primary',
+    eventId,
+    sendUpdates: 'all'
+  });
+
+  return { success: true, eventId };
+}

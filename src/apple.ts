@@ -58,7 +58,7 @@ function escapeApple(s: string) {
 }
 
 // AppleScript needs a localized date string. Use system locale-friendly format.
-// We’ll output like: Thursday, 9 October 2025 14:00:00
+// We'll output like: Thursday, 9 October 2025 14:00:00
 function appleDateString(iso: string) {
   const d = new Date(iso);
   // Use toLocaleString with en-GB to be robust (24h). Adjust as needed.
@@ -73,4 +73,151 @@ function appleDateString(iso: string) {
     hour12: false,
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
   });
+}
+
+// -----------------------------------------------------------------------------
+// UPDATE APPLE CALENDAR EVENT
+// -----------------------------------------------------------------------------
+export async function updateAppleCalendarEvent({
+  calendarName,
+  originalTitle,
+  originalStartISO,
+  updates
+}: {
+  calendarName: string;
+  originalTitle: string;
+  originalStartISO: string;
+  updates: {
+    title?: string;
+    notes?: string;
+    location?: string;
+    startISO?: string;
+    endISO?: string;
+    attendees?: { email: string; displayName?: string }[];
+  };
+}) {
+  // AppleScript: find event by title and start date, then update properties
+  const searchStartDate = appleDateString(originalStartISO);
+  
+  // Build property update statements
+  const propertyUpdates: string[] = [];
+  
+  if (updates.title !== undefined) {
+    propertyUpdates.push(`set summary of theEvent to "${escapeApple(updates.title)}"`);
+  }
+  if (updates.location !== undefined) {
+    propertyUpdates.push(`set location of theEvent to "${escapeApple(updates.location)}"`);
+  }
+  if (updates.notes !== undefined) {
+    propertyUpdates.push(`set description of theEvent to "${escapeApple(updates.notes)}"`);
+  }
+  if (updates.startISO !== undefined) {
+    propertyUpdates.push(`set start date of theEvent to date "${appleDateString(updates.startISO)}"`);
+  }
+  if (updates.endISO !== undefined) {
+    propertyUpdates.push(`set end date of theEvent to date "${appleDateString(updates.endISO)}"`);
+  }
+
+  const script = `
+set calName to "${escapeApple(calendarName)}"
+set searchTitle to "${escapeApple(originalTitle)}"
+set searchStart to date "${searchStartDate}"
+
+tell application "Calendar"
+  if not (exists calendar calName) then
+    error "Calendar not found: " & calName
+  end if
+  
+  set theCal to calendar calName
+  set foundEvent to false
+  
+  -- Search for event by title and start date
+  repeat with theEvent in events of theCal
+    if (summary of theEvent = searchTitle) and (start date of theEvent = searchStart) then
+      set foundEvent to true
+      
+      -- Apply updates
+      ${propertyUpdates.join('\n      ')}
+      
+      ${updates.attendees ? `
+      -- Remove old attendees
+      delete every attendee of theEvent
+      
+      -- Add new attendees
+      ${updates.attendees.map((a) => 
+        `make new attendee at theEvent with properties {email:"${escapeApple(a.email)}", display name:"${escapeApple(a.displayName || '')}"}`
+      ).join('\n      ')}
+      ` : ''}
+      
+      exit repeat
+    end if
+  end repeat
+  
+  if not foundEvent then
+    error "Event not found: " & searchTitle & " at " & searchStart
+  end if
+end tell
+`;
+
+  try {
+    await execFileAsync('/usr/bin/osascript', ['-e', script]);
+    return { success: true };
+  } catch (error: any) {
+    // Event might not exist in Apple Calendar (e.g., user deleted it manually)
+    console.warn('Apple Calendar update failed:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+// -----------------------------------------------------------------------------
+// DELETE APPLE CALENDAR EVENT
+// -----------------------------------------------------------------------------
+export async function deleteAppleCalendarEvent({
+  calendarName,
+  title,
+  startISO
+}: {
+  calendarName: string;
+  title: string;
+  startISO: string;
+}) {
+  // AppleScript: find event by title and start date, then delete
+  const searchStartDate = appleDateString(startISO);
+
+  const script = `
+set calName to "${escapeApple(calendarName)}"
+set searchTitle to "${escapeApple(title)}"
+set searchStart to date "${searchStartDate}"
+
+tell application "Calendar"
+  if not (exists calendar calName) then
+    error "Calendar not found: " & calName
+  end if
+  
+  set theCal to calendar calName
+  set foundEvent to false
+  
+  -- Search for event by title and start date
+  repeat with theEvent in events of theCal
+    if (summary of theEvent = searchTitle) and (start date of theEvent = searchStart) then
+      delete theEvent
+      set foundEvent to true
+      exit repeat
+    end if
+  end repeat
+  
+  if not foundEvent then
+    error "Event not found: " & searchTitle & " at " & searchStart
+  end if
+end tell
+`;
+
+  try {
+    await execFileAsync('/usr/bin/osascript', ['-e', script]);
+    return { success: true };
+  } catch (error: any) {
+    // Event might not exist in Apple Calendar (e.g., user deleted it manually)
+    console.warn('Apple Calendar delete failed:', error.message);
+    return { success: false, error: error.message };
+  }
 }

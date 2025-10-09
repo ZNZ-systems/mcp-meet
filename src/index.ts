@@ -3,8 +3,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-import { getGoogle, searchInvitees, freeBusy, createMeetEvent } from './google.js';
-import { addToAppleCalendar } from './apple.js';
+import { getGoogle, searchInvitees, freeBusy, createMeetEvent, listMeetings, getMeetingDetails, updateMeetEvent, deleteMeetEvent } from './google.js';
+import { addToAppleCalendar, updateAppleCalendarEvent, deleteAppleCalendarEvent } from './apple.js';
 import { computeCommonFree, googleFreeBusyToBusyMap } from './availability.js';
 
 /* ---------------------------------- Utils --------------------------------- */
@@ -235,6 +235,169 @@ async function startMcp() {
           {
             type: 'text',
             text: `✅ Scheduled "${title}" from ${pick.startISO} → ${pick.endISO}\n🔗 Meet: ${result.meetUrl}\n\n${JSON.stringify(payload, null, 2)}`
+          } as const
+        ]
+      };
+    }
+  );
+
+  // Tool: list_meetings
+  server.registerTool(
+    'list_meetings',
+    {
+      title: 'List upcoming meetings',
+      description: 'List upcoming Google Meet meetings within a time window.',
+      inputSchema: {
+        windowStartISO: z.string(),
+        windowEndISO: z.string(),
+        maxResults: z.number().int().positive().optional()
+      }
+    },
+    async ({ windowStartISO, windowEndISO, maxResults }) => {
+      const meetings = await listMeetings(windowStartISO, windowEndISO, maxResults ?? 50);
+      const payload = { meetings };
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `✅ Found ${meetings.length} meeting(s).\n\n${JSON.stringify(payload, null, 2)}`
+          } as const
+        ]
+      };
+    }
+  );
+
+  // Tool: get_meeting_details
+  server.registerTool(
+    'get_meeting_details',
+    {
+      title: 'Get meeting details',
+      description: 'Get detailed information about a specific meeting by event ID.',
+      inputSchema: {
+        eventId: z.string()
+      }
+    },
+    async ({ eventId }) => {
+      const details = await getMeetingDetails(eventId);
+      const payload = { meeting: details };
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `✅ Meeting details:\n\n${JSON.stringify(payload, null, 2)}`
+          } as const
+        ]
+      };
+    }
+  );
+
+  // Tool: update_meeting
+  server.registerTool(
+    'update_meeting',
+    {
+      title: 'Update meeting',
+      description: 'Update an existing Google Meet meeting and sync changes to Apple Calendar.',
+      inputSchema: {
+        eventId: z.string(),
+        title: z.string().optional(),
+        description: z.string().optional(),
+        startISO: z.string().optional(),
+        endISO: z.string().optional(),
+        attendees: z.array(
+          z.object({
+            email: z.string().email(),
+            displayName: z.string().optional()
+          })
+        ).optional(),
+        appleCalendarName: z.string().optional()
+      }
+    },
+    async ({ eventId, title, description, startISO, endISO, attendees, appleCalendarName }) => {
+      // Get original event details for Apple Calendar lookup
+      const originalEvent = await getMeetingDetails(eventId);
+
+      // Update Google Calendar
+      const updates: any = {};
+      if (title !== undefined) updates.summary = title;
+      if (description !== undefined) updates.description = description;
+      if (startISO !== undefined) updates.startISO = startISO;
+      if (endISO !== undefined) updates.endISO = endISO;
+      if (attendees !== undefined) updates.attendees = attendees;
+
+      const result = await updateMeetEvent(eventId, updates);
+
+      // Update Apple Calendar
+      const calName = appleCalendarName || process.env.APPLE_CALENDAR_NAME || 'Meetings';
+      const appleUpdates: any = {};
+      
+      if (title !== undefined) appleUpdates.title = title;
+      if (description !== undefined) {
+        appleUpdates.notes = `Google Meet: ${result.meetUrl}\n\n${description}`;
+      }
+      if (result.meetUrl) appleUpdates.location = result.meetUrl;
+      if (startISO !== undefined) appleUpdates.startISO = startISO;
+      if (endISO !== undefined) appleUpdates.endISO = endISO;
+      if (attendees !== undefined) appleUpdates.attendees = attendees;
+
+      const appleResult = await updateAppleCalendarEvent({
+        calendarName: calName,
+        originalTitle: originalEvent.title,
+        originalStartISO: originalEvent.startISO,
+        updates: appleUpdates
+      });
+
+      const payload = {
+        googleCalendar: { meetUrl: result.meetUrl, eventHtml: result.htmlLink },
+        appleCalendar: appleResult
+      };
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `✅ Meeting updated.\n🔗 Meet: ${result.meetUrl}\n\n${JSON.stringify(payload, null, 2)}`
+          } as const
+        ]
+      };
+    }
+  );
+
+  // Tool: delete_meeting
+  server.registerTool(
+    'delete_meeting',
+    {
+      title: 'Delete meeting',
+      description: 'Delete a Google Meet meeting and remove it from Apple Calendar.',
+      inputSchema: {
+        eventId: z.string(),
+        appleCalendarName: z.string().optional()
+      }
+    },
+    async ({ eventId, appleCalendarName }) => {
+      // Get event details before deletion for Apple Calendar lookup
+      const eventDetails = await getMeetingDetails(eventId);
+
+      // Delete from Apple Calendar first
+      const calName = appleCalendarName || process.env.APPLE_CALENDAR_NAME || 'Meetings';
+      const appleResult = await deleteAppleCalendarEvent({
+        calendarName: calName,
+        title: eventDetails.title,
+        startISO: eventDetails.startISO
+      });
+
+      // Delete from Google Calendar
+      const googleResult = await deleteMeetEvent(eventId);
+
+      const payload = {
+        googleCalendar: googleResult,
+        appleCalendar: appleResult
+      };
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `✅ Meeting deleted.\n\n${JSON.stringify(payload, null, 2)}`
           } as const
         ]
       };

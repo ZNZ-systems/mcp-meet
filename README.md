@@ -14,14 +14,23 @@ If like me you hate running google apps locally because they kill your battery l
 -  **One-Click Scheduling** - Automatically find the best slot and book it
 -  **Google Meet Links** - Every meeting comes with a Meet link ready to go
 -  **Apple Calendar Sync** - Meetings automatically appear in your macOS Calendar app
+-  **Full CRUD Operations** - List, view, update, and delete meetings with Google and Apple Calendar sync
 
 ## How it works
 
+### Scheduling Tools
 
 1. **`search_invitees`** - Search your Google Contacts to find email addresses
 2. **`find_slots`** - Get a list of common free time slots across all attendees
 3. **`create_meet_and_calendar`** - Create a Google Calendar event with Meet link and mirror to Apple Calendar
 4. **`plan_and_schedule`** - The smart one: finds the first available slot that fits your duration and books it instantly
+
+### Meeting Management Tools
+
+5. **`list_meetings`** - List all upcoming Google Meet meetings in a time window
+6. **`get_meeting_details`** - Get detailed information about a specific meeting by ID
+7. **`update_meeting`** - Update meeting title, time, description, or attendees (syncs to Apple Calendar)
+8. **`delete_meeting`** - Delete a meeting from both Google and Apple Calendar
 
 ## Setup
 
