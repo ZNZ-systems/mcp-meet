@@ -3,12 +3,21 @@ import { google } from 'googleapis';
 import http from 'http';
 import open from 'open';
 import { URL } from 'url';
+import os from 'os';
+import path from 'path';
+import { promises as fs } from 'fs';
 
+// -----------------------------------------------------------------------------
+// GOOGLE OAUTH SCOPES
+// -----------------------------------------------------------------------------
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar',
   'https://www.googleapis.com/auth/contacts.readonly'
 ];
 
+// -----------------------------------------------------------------------------
+// CLIENT TYPES
+// -----------------------------------------------------------------------------
 export type GoogleClients = {
   calendar: ReturnType<typeof google.calendar>;
   people: ReturnType<typeof google.people>;
@@ -17,6 +26,9 @@ export type GoogleClients = {
 
 let cached: GoogleClients | null = null;
 
+// -----------------------------------------------------------------------------
+// MAIN ENTRY: getGoogle()
+// -----------------------------------------------------------------------------
 export async function getGoogle(): Promise<GoogleClients> {
   if (cached) return cached;
 
@@ -31,7 +43,6 @@ export async function getGoogle(): Promise<GoogleClients> {
     GOOGLE_REDIRECT_URI
   );
 
-  // Try to load tokens from disk
   const tokens = await loadTokens();
   if (tokens) {
     oauth2.setCredentials(tokens);
@@ -46,6 +57,9 @@ export async function getGoogle(): Promise<GoogleClients> {
   return cached;
 }
 
+// -----------------------------------------------------------------------------
+// INTERACTIVE AUTH FLOW
+// -----------------------------------------------------------------------------
 async function interactiveAuth(oauth2: any) {
   const authUrl = oauth2.generateAuthUrl({
     access_type: 'offline',
@@ -67,7 +81,7 @@ async function interactiveAuth(oauth2: any) {
       await saveTokens(tokens);
 
       res.writeHead(200, { 'Content-Type': 'text/plain' });
-      res.end('Google auth complete. You can close this tab.');
+      res.end('✅ Google authentication complete. You can close this tab.');
       server.close();
     } catch (e: any) {
       res.writeHead(500);
@@ -82,8 +96,14 @@ async function interactiveAuth(oauth2: any) {
   });
 }
 
-import { promises as fs } from 'fs';
-const TOK_PATH = '.google.tokens.json';
+// -----------------------------------------------------------------------------
+// TOKEN STORAGE (global location)
+// -----------------------------------------------------------------------------
+function cfgDir() {
+  const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  return path.join(base, 'mcp-meet');
+}
+const TOK_PATH = path.join(cfgDir(), 'tokens.json');
 
 async function loadTokens() {
   try {
@@ -93,11 +113,15 @@ async function loadTokens() {
     return null;
   }
 }
+
 async function saveTokens(tokens: any) {
+  await fs.mkdir(cfgDir(), { recursive: true });
   await fs.writeFile(TOK_PATH, JSON.stringify(tokens, null, 2));
 }
 
-// ---- People API: find contacts by name/email substring
+// -----------------------------------------------------------------------------
+// PEOPLE API — Search Contacts
+// -----------------------------------------------------------------------------
 export async function searchInvitees(query: string, limit = 10) {
   const { people } = await getGoogle();
   const resp = await people.people.searchContacts({
@@ -114,7 +138,9 @@ export async function searchInvitees(query: string, limit = 10) {
   return results.filter((r) => r.email);
 }
 
-// ---- Availability: Google Calendar freeBusy for list of emails + self
+// -----------------------------------------------------------------------------
+// CALENDAR API — FreeBusy Lookup
+// -----------------------------------------------------------------------------
 export async function freeBusy(
   timeMinISO: string,
   timeMaxISO: string,
@@ -136,7 +162,9 @@ export async function freeBusy(
   return resp.data.calendars;
 }
 
-// ---- Create Google Meet event on primary calendar
+// -----------------------------------------------------------------------------
+// CALENDAR API — Create Google Meet Event
+// -----------------------------------------------------------------------------
 export async function createMeetEvent({
   summary,
   description,
