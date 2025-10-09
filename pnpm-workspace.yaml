@@ -1,5 +1,2 @@
 packages:
   - '.'
-
-overrides:
-  mcp-meet: link:../../Library/pnpm/global/5/node_modules/mcp-meet
