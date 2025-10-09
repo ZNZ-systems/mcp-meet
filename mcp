@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "mcp-meet": {
+      "command": "node",
+      "args": ["./node_modules/tsx/dist/cli.js", "src/index.ts"],
+      "env": {
+        "GOOGLE_CLIENT_ID": "…",
+        "GOOGLE_CLIENT_SECRET": "…",
+        "GOOGLE_REDIRECT_URI": "http://localhost:5173/oauth2/callback",
+        "CALENDAR_IDS": "primary",
+        "APPLE_CALENDAR_NAME": "Meetings",
+        "TZ": "Europe/London"
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "mcp-meet",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node --env-file=.env --enable-source-maps dist/index.js",
+    "cli": "tsx src/index.ts cli",
+    "lint": "node -e \"process.exit(0)\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.1.0",
+    "date-fns": "^4.1.0",
+    "dotenv": "^16.4.5",
+    "googleapis": "^139.0.0",
+    "open": "^10.2.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.3"
+  }
+}
