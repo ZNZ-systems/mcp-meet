@@ -8,6 +8,20 @@ import { addToAppleCalendar, updateAppleCalendarEvent, deleteAppleCalendarEvent 
 import { computeCommonFree, googleFreeBusyToBusyMap } from './availability.js';
 
 /* ---------------------------------- Utils --------------------------------- */
+// Validate ISO 8601 date string
+function validateISODate(dateString: string, fieldName: string): void {
+  // Validate strict ISO 8601 format: YYYY-MM-DDTHH:mm:ss.sssZ or YYYY-MM-DDTHH:mm:ssZ or with timezone offset
+  const iso8601Regex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?(Z|[+-]\d{2}:\d{2})$/;
+  if (!iso8601Regex.test(dateString)) {
+    throw new Error(`Invalid ISO 8601 format for ${fieldName}: ${dateString}. Expected format: YYYY-MM-DDTHH:mm:ss.sssZ or YYYY-MM-DDTHH:mm:ssZ`);
+  }
+
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) {
+    throw new Error(`Invalid date value for ${fieldName}: ${dateString}`);
+  }
+}
+
 // find a contiguous run of small slots whose combined span >= duration
 function pickContiguous(
   slots: { startISO: string; endISO: string }[],
@@ -44,7 +58,7 @@ function pickContiguous(
 async function startMcp() {
   const server = new McpServer({
     name: 'mcp-meet',
-    version: '0.2.0'
+    version: '0.4.0'
   });
 
   // Tool: search_invitees
@@ -89,6 +103,9 @@ async function startMcp() {
       // No outputSchema
     },
     async ({ attendees, windowStartISO, windowEndISO, slotMinutes }) => {
+      validateISODate(windowStartISO, 'windowStartISO');
+      validateISODate(windowEndISO, 'windowEndISO');
+
       const calendars = await freeBusy(windowStartISO, windowEndISO, attendees);
       const busyMap = googleFreeBusyToBusyMap(calendars);
       const slots = computeCommonFree({
@@ -134,6 +151,9 @@ async function startMcp() {
       // No outputSchema
     },
     async ({ title, description, startISO, endISO, attendees, appleCalendarName }) => {
+      validateISODate(startISO, 'startISO');
+      validateISODate(endISO, 'endISO');
+
       const result = await createMeetEvent({
         summary: title,
         description,
@@ -188,6 +208,9 @@ async function startMcp() {
       windowEndISO,
       appleCalendarName
     }) => {
+      validateISODate(windowStartISO, 'windowStartISO');
+      validateISODate(windowEndISO, 'windowEndISO');
+
       const calendars = await freeBusy(windowStartISO, windowEndISO, attendees);
       const busyMap = googleFreeBusyToBusyMap(calendars);
 
@@ -254,6 +277,9 @@ async function startMcp() {
       }
     },
     async ({ windowStartISO, windowEndISO, maxResults }) => {
+      validateISODate(windowStartISO, 'windowStartISO');
+      validateISODate(windowEndISO, 'windowEndISO');
+
       const meetings = await listMeetings(windowStartISO, windowEndISO, maxResults ?? 50);
       const payload = { meetings };
       return {
@@ -313,6 +339,10 @@ async function startMcp() {
       }
     },
     async ({ eventId, title, description, startISO, endISO, attendees, appleCalendarName }) => {
+      // Validate ISO dates if provided
+      if (startISO !== undefined) validateISODate(startISO, 'startISO');
+      if (endISO !== undefined) validateISODate(endISO, 'endISO');
+
       // Get original event details for Apple Calendar lookup
       const originalEvent = await getMeetingDetails(eventId);
 
