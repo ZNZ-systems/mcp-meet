@@ -40,11 +40,10 @@ function pickContiguous(
   return null;
 }
 
-/* ------------------------------- MCP SERVER ------------------------------- */
 async function startMcp() {
   const server = new McpServer({
     name: 'mcp-meet',
-    version: '0.2.0'
+    version: '0.4.1'
   });
 
   // Tool: search_invitees
