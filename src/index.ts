@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { getGoogle, searchInvitees, freeBusy, createMeetEvent, listMeetings, getMeetingDetails, updateMeetEvent, deleteMeetEvent } from './google.js';
 import { addToAppleCalendar, updateAppleCalendarEvent, deleteAppleCalendarEvent } from './apple.js';
 import { computeCommonFree, googleFreeBusyToBusyMap } from './availability.js';
+import { parseDateWindow } from './date-utils.js';
 
 /* ---------------------------------- Utils --------------------------------- */
 // Validate ISO 8601 date string
@@ -96,21 +97,37 @@ async function startMcp() {
       description: 'Compute shared availability across attendees using Google freeBusy.',
       inputSchema: {
         attendees: z.array(z.string().email()),
-        windowStartISO: z.string(),
-        windowEndISO: z.string(),
+        window: z.string().optional(),
+        windowStartISO: z.string().optional(),
+        windowEndISO: z.string().optional(),
         slotMinutes: z.number().int().positive().optional()
       }
       // No outputSchema
     },
-    async ({ attendees, windowStartISO, windowEndISO, slotMinutes }) => {
-      validateISODate(windowStartISO, 'windowStartISO');
-      validateISODate(windowEndISO, 'windowEndISO');
+    async ({ attendees, window, windowStartISO, windowEndISO, slotMinutes }) => {
+      if (window && (windowStartISO || windowEndISO)) {
+        throw new Error('Cannot provide both `window` and ISO start/end times.');
+      }
+      if (!window && (!windowStartISO || !windowEndISO)) {
+        throw new Error('Must provide either `window` or both ISO start/end times.');
+      }
 
-      const calendars = await freeBusy(windowStartISO, windowEndISO, attendees);
+      let start: string, end: string;
+      if (window) {
+        ({ startISO: start, endISO: end } = parseDateWindow(window));
+      } else {
+        start = windowStartISO!;
+        end = windowEndISO!;
+      }
+
+      validateISODate(start, 'windowStartISO');
+      validateISODate(end, 'windowEndISO');
+
+      const calendars = await freeBusy(start, end, attendees);
       const busyMap = googleFreeBusyToBusyMap(calendars);
       const slots = computeCommonFree({
-        windowStartISO,
-        windowEndISO,
+        windowStartISO: start,
+        windowEndISO: end,
         busyMaps: busyMap,
         slotMinutes: slotMinutes ?? 30
       });
@@ -193,8 +210,9 @@ async function startMcp() {
         description: z.string().optional(),
         attendees: z.array(z.string().email()),
         durationMinutes: z.number().int().positive(),
-        windowStartISO: z.string(),
-        windowEndISO: z.string(),
+        window: z.string().optional(),
+        windowStartISO: z.string().optional(),
+        windowEndISO: z.string().optional(),
         appleCalendarName: z.string().optional()
       }
       // No outputSchema
@@ -204,21 +222,37 @@ async function startMcp() {
       description,
       attendees,
       durationMinutes,
+      window,
       windowStartISO,
       windowEndISO,
       appleCalendarName
     }) => {
-      validateISODate(windowStartISO, 'windowStartISO');
-      validateISODate(windowEndISO, 'windowEndISO');
+      if (window && (windowStartISO || windowEndISO)) {
+        throw new Error('Cannot provide both `window` and ISO start/end times.');
+      }
+      if (!window && (!windowStartISO || !windowEndISO)) {
+        throw new Error('Must provide either `window` or both ISO start/end times.');
+      }
 
-      const calendars = await freeBusy(windowStartISO, windowEndISO, attendees);
+      let start: string, end: string;
+      if (window) {
+        ({ startISO: start, endISO: end } = parseDateWindow(window));
+      } else {
+        start = windowStartISO!;
+        end = windowEndISO!;
+      }
+
+      validateISODate(start, 'windowStartISO');
+      validateISODate(end, 'windowEndISO');
+
+      const calendars = await freeBusy(start, end, attendees);
       const busyMap = googleFreeBusyToBusyMap(calendars);
 
       // Build slots on a small grid to find a contiguous span of durationMinutes
       const tryMinutes = Math.min(30, Math.max(5, Math.floor(durationMinutes / 6)));
       const grid = computeCommonFree({
-        windowStartISO,
-        windowEndISO,
+        windowStartISO: start,
+        windowEndISO: end,
         busyMaps: busyMap,
         slotMinutes: tryMinutes
       });
