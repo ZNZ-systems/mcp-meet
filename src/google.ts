@@ -124,7 +124,7 @@ async function saveTokens(tokens: any) {
   try {
     await fs.mkdir(cfgDir(), { recursive: true });
     await fs.writeFile(TOK_PATH, JSON.stringify(tokens, null, 2));
-    console.log(`✅ Tokens saved to ${TOK_PATH}`);
+    console.error(`✅ Tokens saved to ${TOK_PATH}`);
   } catch (error: any) {
     console.error(`❌ Failed to save tokens to ${TOK_PATH}:`, error.message);
     throw new Error(`Token save failed: ${error.message}`);
