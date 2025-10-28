@@ -109,14 +109,26 @@ async function loadTokens() {
   try {
     const s = await fs.readFile(TOK_PATH, 'utf-8');
     return JSON.parse(s);
-  } catch {
+  } catch (error: any) {
+    if (error.code === 'ENOENT') {
+      // File doesn't exist, user needs to authenticate
+      return null;
+    }
+    // Log other errors for debugging
+    console.warn(`Failed to load tokens from ${TOK_PATH}:`, error.message);
     return null;
   }
 }
 
 async function saveTokens(tokens: any) {
-  await fs.mkdir(cfgDir(), { recursive: true });
-  await fs.writeFile(TOK_PATH, JSON.stringify(tokens, null, 2));
+  try {
+    await fs.mkdir(cfgDir(), { recursive: true });
+    await fs.writeFile(TOK_PATH, JSON.stringify(tokens, null, 2));
+    console.log(`✅ Tokens saved to ${TOK_PATH}`);
+  } catch (error: any) {
+    console.error(`❌ Failed to save tokens to ${TOK_PATH}:`, error.message);
+    throw new Error(`Token save failed: ${error.message}`);
+  }
 }
 
 // -----------------------------------------------------------------------------
