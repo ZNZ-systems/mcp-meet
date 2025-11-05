@@ -23,6 +23,39 @@ function validateISODate(dateString: string, fieldName: string): void {
   }
 }
 
+// Validate that start date is before end date
+function validateDateRange(startISO: string, endISO: string): void {
+  const start = new Date(startISO);
+  const end = new Date(endISO);
+
+  if (start.getTime() >= end.getTime()) {
+    throw new Error(`Start date (${startISO}) must be before end date (${endISO})`);
+  }
+}
+
+// Validate that time window is reasonable (not too long)
+function validateTimeWindow(startISO: string, endISO: string, maxDays = 365): void {
+  const start = new Date(startISO);
+  const end = new Date(endISO);
+  const diffMs = end.getTime() - start.getTime();
+  const diffDays = diffMs / (1000 * 60 * 60 * 24);
+
+  if (diffDays > maxDays) {
+    throw new Error(`Time window is too large (${diffDays.toFixed(1)} days). Maximum allowed is ${maxDays} days.`);
+  }
+}
+
+// Validate meeting duration is reasonable
+function validateDuration(durationMinutes: number): void {
+  if (durationMinutes < 1) {
+    throw new Error(`Meeting duration must be at least 1 minute (got ${durationMinutes})`);
+  }
+
+  if (durationMinutes > 1440) { // 24 hours
+    throw new Error(`Meeting duration is too long (${durationMinutes} minutes). Maximum is 1440 minutes (24 hours).`);
+  }
+}
+
 // find a contiguous run of small slots whose combined span >= duration
 function pickContiguous(
   slots: { startISO: string; endISO: string }[],
@@ -122,6 +155,8 @@ async function startMcp() {
 
       validateISODate(start, 'windowStartISO');
       validateISODate(end, 'windowEndISO');
+      validateDateRange(start, end);
+      validateTimeWindow(start, end, 90); // Max 90 days for availability search
 
       const calendars = await freeBusy(start, end, attendees);
       const busyMap = googleFreeBusyToBusyMap(calendars);
@@ -170,6 +205,7 @@ async function startMcp() {
     async ({ title, description, startISO, endISO, attendees, appleCalendarName }) => {
       validateISODate(startISO, 'startISO');
       validateISODate(endISO, 'endISO');
+      validateDateRange(startISO, endISO);
 
       const result = await createMeetEvent({
         summary: title,
@@ -244,6 +280,9 @@ async function startMcp() {
 
       validateISODate(start, 'windowStartISO');
       validateISODate(end, 'windowEndISO');
+      validateDateRange(start, end);
+      validateTimeWindow(start, end, 90); // Max 90 days for availability search
+      validateDuration(durationMinutes);
 
       const calendars = await freeBusy(start, end, attendees);
       const busyMap = googleFreeBusyToBusyMap(calendars);
@@ -313,6 +352,8 @@ async function startMcp() {
     async ({ windowStartISO, windowEndISO, maxResults }) => {
       validateISODate(windowStartISO, 'windowStartISO');
       validateISODate(windowEndISO, 'windowEndISO');
+      validateDateRange(windowStartISO, windowEndISO);
+      validateTimeWindow(windowStartISO, windowEndISO, 365); // Max 1 year for listing
 
       const meetings = await listMeetings(windowStartISO, windowEndISO, maxResults ?? 50);
       const payload = { meetings };
@@ -376,6 +417,11 @@ async function startMcp() {
       // Validate ISO dates if provided
       if (startISO !== undefined) validateISODate(startISO, 'startISO');
       if (endISO !== undefined) validateISODate(endISO, 'endISO');
+
+      // Validate date range if both dates are provided
+      if (startISO !== undefined && endISO !== undefined) {
+        validateDateRange(startISO, endISO);
+      }
 
       // Get original event details for Apple Calendar lookup
       const originalEvent = await getMeetingDetails(eventId);
