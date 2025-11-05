@@ -166,6 +166,76 @@ export async function searchInvitees(query: string, limit = 10) {
 }
 
 // -----------------------------------------------------------------------------
+// PEOPLE API — Resolve Name or Email to Email Address
+// -----------------------------------------------------------------------------
+/**
+ * Resolves a name or email to an email address.
+ * - If input is already an email, returns it as-is
+ * - If input is a name, searches contacts and returns the email if exactly one match is found
+ * - Throws an error if contact cannot be uniquely identified
+ */
+export async function resolveToEmail(nameOrEmail: string): Promise<{ email: string; displayName?: string }> {
+  const trimmed = nameOrEmail.trim();
+
+  // Check if it's already an email (contains @ and basic email pattern)
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (emailPattern.test(trimmed)) {
+    return { email: trimmed };
+  }
+
+  // Not an email, search contacts by name
+  const results = await searchInvitees(trimmed, 10);
+
+  // Only use the contact if we found exactly one match with an email
+  if (results.length === 1) {
+    return { email: results[0].email, displayName: results[0].name };
+  }
+
+  // Provide clear error messages for different scenarios
+  if (results.length === 0) {
+    throw new Error(
+      `No contact found for "${trimmed}". Please provide a specific email address.`
+    );
+  }
+
+  // Multiple matches found
+  throw new Error(
+    `Multiple contacts found for "${trimmed}". Please provide a specific email address.`
+  );
+}
+
+// -----------------------------------------------------------------------------
+// PEOPLE API — Resolve Multiple Names/Emails to Email Addresses
+// -----------------------------------------------------------------------------
+/**
+ * Resolves an array of names and/or emails to email addresses with display names.
+ * Each entry can be either a name or an email address.
+ * Resolves all attendees in parallel for better performance.
+ */
+export async function resolveAttendeesToEmails(
+  namesOrEmails: string[]
+): Promise<{ email: string; displayName?: string }[]> {
+  try {
+    // Resolve all attendees in parallel
+    const resolved = await Promise.all(
+      namesOrEmails.map(async (nameOrEmail) => {
+        try {
+          return await resolveToEmail(nameOrEmail);
+        } catch (error) {
+          // Re-throw with context about which attendee failed
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Failed to resolve attendee "${nameOrEmail}": ${message}`);
+        }
+      })
+    );
+    return resolved;
+  } catch (error) {
+    // Re-throw the error as-is (already has context from the map)
+    throw error;
+  }
+}
+
+// -----------------------------------------------------------------------------
 // CALENDAR API — FreeBusy Lookup
 // -----------------------------------------------------------------------------
 export async function freeBusy(

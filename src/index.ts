@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-import { getGoogle, searchInvitees, freeBusy, createMeetEvent, listMeetings, getMeetingDetails, updateMeetEvent, deleteMeetEvent } from './google.js';
+import { getGoogle, searchInvitees, freeBusy, createMeetEvent, listMeetings, getMeetingDetails, updateMeetEvent, deleteMeetEvent, resolveAttendeesToEmails } from './google.js';
 import { addToAppleCalendar, updateAppleCalendarEvent, deleteAppleCalendarEvent } from './apple.js';
 import { computeCommonFree, googleFreeBusyToBusyMap } from './availability.js';
 import { parseDateWindow } from './date-utils.js';
@@ -127,9 +127,9 @@ async function startMcp() {
     'find_slots',
     {
       title: 'Find common free slots',
-      description: 'Compute shared availability across attendees using Google freeBusy.',
+      description: 'Compute shared availability across attendees using Google freeBusy. Attendees can be specified by name or email address - names will be automatically resolved to emails via Google Contacts.',
       inputSchema: {
-        attendees: z.array(z.string().email()),
+        attendees: z.array(z.string()),
         window: z.string().optional(),
         windowStartISO: z.string().optional(),
         windowEndISO: z.string().optional(),
@@ -158,7 +158,11 @@ async function startMcp() {
       validateDateRange(start, end);
       validateTimeWindow(start, end, 90); // Max 90 days for availability search
 
-      const calendars = await freeBusy(start, end, attendees);
+      // Resolve attendees (names or emails) to email addresses
+      const resolvedAttendees = await resolveAttendeesToEmails(attendees);
+      const attendeeEmails = resolvedAttendees.map(a => a.email);
+
+      const calendars = await freeBusy(start, end, attendeeEmails);
       const busyMap = googleFreeBusyToBusyMap(calendars);
       const slots = computeCommonFree({
         windowStartISO: start,
@@ -186,18 +190,13 @@ async function startMcp() {
     {
       title: 'Create Meet + Apple Calendar event',
       description:
-        'Creates a Google Calendar event with a Meet link and mirrors it to Apple Calendar.',
+        'Creates a Google Calendar event with a Meet link and mirrors it to Apple Calendar. Attendees can be specified by name or email address - names will be automatically resolved to emails via Google Contacts.',
       inputSchema: {
         title: z.string(),
         description: z.string().optional(),
         startISO: z.string(),
         endISO: z.string(),
-        attendees: z.array(
-          z.object({
-            email: z.string().email(),
-            displayName: z.string().optional()
-          })
-        ),
+        attendees: z.array(z.string()),
         appleCalendarName: z.string().optional()
       }
       // No outputSchema
@@ -207,12 +206,15 @@ async function startMcp() {
       validateISODate(endISO, 'endISO');
       validateDateRange(startISO, endISO);
 
+      // Resolve attendees (names or emails) to email addresses
+      const resolvedAttendees = await resolveAttendeesToEmails(attendees);
+
       const result = await createMeetEvent({
         summary: title,
         description,
         startISO,
         endISO,
-        attendees
+        attendees: resolvedAttendees
       });
 
       await addToAppleCalendar({
@@ -222,7 +224,7 @@ async function startMcp() {
         location: result.meetUrl,
         startISO,
         endISO,
-        attendees
+        attendees: resolvedAttendees
       });
 
       const payload = { meetUrl: result.meetUrl, eventHtml: result.htmlLink };
@@ -240,11 +242,11 @@ async function startMcp() {
     {
       title: 'Plan and schedule',
       description:
-        'Finds the first contiguous slot of the requested duration within a window and books it.',
+        'Finds the first contiguous slot of the requested duration within a window and books it. Attendees can be specified by name or email address - names will be automatically resolved to emails via Google Contacts.',
       inputSchema: {
         title: z.string(),
         description: z.string().optional(),
-        attendees: z.array(z.string().email()),
+        attendees: z.array(z.string()),
         durationMinutes: z.number().int().positive(),
         window: z.string().optional(),
         windowStartISO: z.string().optional(),
@@ -284,7 +286,11 @@ async function startMcp() {
       validateTimeWindow(start, end, 90); // Max 90 days for availability search
       validateDuration(durationMinutes);
 
-      const calendars = await freeBusy(start, end, attendees);
+      // Resolve attendees (names or emails) to email addresses
+      const resolvedAttendees = await resolveAttendeesToEmails(attendees);
+      const attendeeEmails = resolvedAttendees.map(a => a.email);
+
+      const calendars = await freeBusy(start, end, attendeeEmails);
       const busyMap = googleFreeBusyToBusyMap(calendars);
 
       // Build slots on a small grid to find a contiguous span of durationMinutes
@@ -308,7 +314,7 @@ async function startMcp() {
         description,
         startISO: pick.startISO,
         endISO: pick.endISO,
-        attendees: attendees.map((e) => ({ email: e }))
+        attendees: resolvedAttendees
       });
 
       await addToAppleCalendar({
@@ -318,7 +324,7 @@ async function startMcp() {
         location: result.meetUrl,
         startISO: pick.startISO,
         endISO: pick.endISO,
-        attendees: attendees.map((e) => ({ email: e }))
+        attendees: resolvedAttendees
       });
 
       const payload = {
@@ -397,19 +403,14 @@ async function startMcp() {
     'update_meeting',
     {
       title: 'Update meeting',
-      description: 'Update an existing Google Meet meeting and sync changes to Apple Calendar.',
+      description: 'Update an existing Google Meet meeting and sync changes to Apple Calendar. Attendees can be specified by name or email address - names will be automatically resolved to emails via Google Contacts.',
       inputSchema: {
         eventId: z.string(),
         title: z.string().optional(),
         description: z.string().optional(),
         startISO: z.string().optional(),
         endISO: z.string().optional(),
-        attendees: z.array(
-          z.object({
-            email: z.string().email(),
-            displayName: z.string().optional()
-          })
-        ).optional(),
+        attendees: z.array(z.string()).optional(),
         appleCalendarName: z.string().optional()
       }
     },
@@ -426,20 +427,39 @@ async function startMcp() {
       // Get original event details for Apple Calendar lookup
       const originalEvent = await getMeetingDetails(eventId);
 
+      // Resolve attendees if provided
+      let resolvedAttendees: { email: string; displayName?: string }[] | undefined;
+      if (attendees !== undefined) {
+        resolvedAttendees = await resolveAttendeesToEmails(attendees);
+      }
+
       // Update Google Calendar
-      const updates: any = {};
+      const updates: {
+        summary?: string;
+        description?: string;
+        startISO?: string;
+        endISO?: string;
+        attendees?: { email: string; displayName?: string }[];
+      } = {};
       if (title !== undefined) updates.summary = title;
       if (description !== undefined) updates.description = description;
       if (startISO !== undefined) updates.startISO = startISO;
       if (endISO !== undefined) updates.endISO = endISO;
-      if (attendees !== undefined) updates.attendees = attendees;
+      if (resolvedAttendees !== undefined) updates.attendees = resolvedAttendees;
 
       const result = await updateMeetEvent(eventId, updates);
 
       // Update Apple Calendar
       const calName = appleCalendarName || process.env.APPLE_CALENDAR_NAME || 'Meetings';
-      const appleUpdates: any = {};
-      
+      const appleUpdates: {
+        title?: string;
+        notes?: string;
+        location?: string;
+        startISO?: string;
+        endISO?: string;
+        attendees?: { email: string; displayName?: string }[];
+      } = {};
+
       if (title !== undefined) appleUpdates.title = title;
       if (description !== undefined) {
         appleUpdates.notes = `Google Meet: ${result.meetUrl}\n\n${description}`;
@@ -447,7 +467,7 @@ async function startMcp() {
       if (result.meetUrl) appleUpdates.location = result.meetUrl;
       if (startISO !== undefined) appleUpdates.startISO = startISO;
       if (endISO !== undefined) appleUpdates.endISO = endISO;
-      if (attendees !== undefined) appleUpdates.attendees = attendees;
+      if (resolvedAttendees !== undefined) appleUpdates.attendees = resolvedAttendees;
 
       const appleResult = await updateAppleCalendarEvent({
         calendarName: calName,
@@ -538,8 +558,10 @@ async function runCli() {
 
   if (cmd === 'find') {
     const [attendeesCsv, startISO, endISO] = rest;
-    const attendees = attendeesCsv.split(',');
-    const cals = await freeBusy(startISO, endISO, attendees);
+    const attendees = attendeesCsv.split(',').map(a => a.trim());
+    const resolvedAttendees = await resolveAttendeesToEmails(attendees);
+    const attendeeEmails = resolvedAttendees.map(a => a.email);
+    const cals = await freeBusy(startISO, endISO, attendeeEmails);
     const busyMap = googleFreeBusyToBusyMap(cals);
     const slots = computeCommonFree({
       windowStartISO: startISO,
@@ -553,12 +575,13 @@ async function runCli() {
 
   if (cmd === 'create') {
     const [title, startISO, endISO, attendeesCsv] = rest;
-    const attendees = attendeesCsv.split(',').map((e) => ({ email: e }));
+    const attendees = attendeesCsv.split(',').map(a => a.trim());
+    const resolvedAttendees = await resolveAttendeesToEmails(attendees);
     const result = await createMeetEvent({
       summary: title,
       startISO,
       endISO,
-      attendees
+      attendees: resolvedAttendees
     });
     await addToAppleCalendar({
       calendarName: process.env.APPLE_CALENDAR_NAME || 'Meetings',
@@ -567,7 +590,7 @@ async function runCli() {
       location: result.meetUrl,
       startISO,
       endISO,
-      attendees
+      attendees: resolvedAttendees
     });
     console.log({ meetUrl: result.meetUrl, eventHtml: result.htmlLink });
     return;
@@ -576,8 +599,10 @@ async function runCli() {
   console.log(`Usage:
   pnpm cli auth
   pnpm cli search "alice"
-  pnpm cli find "a@x.com,b@y.com" 2025-10-09T09:00:00Z 2025-10-09T17:00:00Z
-  pnpm cli create "Design Sync" 2025-10-10T14:00:00Z 2025-10-10T14:30:00Z "a@x.com,b@y.com"
+  pnpm cli find "Alice,Bob" 2025-10-09T09:00:00Z 2025-10-09T17:00:00Z
+  pnpm cli create "Design Sync" 2025-10-10T14:00:00Z 2025-10-10T14:30:00Z "Alice,bob@example.com"
+
+  Note: Attendees can be specified by name or email address.
 `);
 }
 
