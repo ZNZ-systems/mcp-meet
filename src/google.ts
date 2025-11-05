@@ -172,7 +172,7 @@ export async function searchInvitees(query: string, limit = 10) {
  * Resolves a name or email to an email address.
  * - If input is already an email, returns it as-is
  * - If input is a name, searches contacts and returns the email if exactly one match is found
- * - Throws an error if no matches or multiple matches are found
+ * - Throws an error if contact cannot be uniquely identified
  */
 export async function resolveToEmail(nameOrEmail: string): Promise<{ email: string; displayName?: string }> {
   const trimmed = nameOrEmail.trim();
@@ -186,20 +186,14 @@ export async function resolveToEmail(nameOrEmail: string): Promise<{ email: stri
   // Not an email, search contacts by name
   const results = await searchInvitees(trimmed, 10);
 
-  if (results.length === 0) {
-    throw new Error(
-      `No contact found for "${trimmed}". Please provide an email address or a more specific name.`
-    );
-  }
-
+  // Only use the contact if we found exactly one match with an email
   if (results.length === 1) {
     return { email: results[0].email, displayName: results[0].name };
   }
 
-  // Multiple matches - provide suggestions
-  const suggestions = results.slice(0, 5).map(r => `${r.name} <${r.email}>`).join('\n  ');
+  // If no match or multiple matches, ask for specific email address
   throw new Error(
-    `Multiple contacts found for "${trimmed}":\n  ${suggestions}\n\nPlease use a more specific name or provide the email address directly.`
+    `Could not uniquely identify contact "${trimmed}". Please provide a specific email address.`
   );
 }
 
