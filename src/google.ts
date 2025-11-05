@@ -191,9 +191,16 @@ export async function resolveToEmail(nameOrEmail: string): Promise<{ email: stri
     return { email: results[0].email, displayName: results[0].name };
   }
 
-  // If no match or multiple matches, ask for specific email address
+  // Provide clear error messages for different scenarios
+  if (results.length === 0) {
+    throw new Error(
+      `No contact found for "${trimmed}". Please provide a specific email address.`
+    );
+  }
+
+  // Multiple matches found
   throw new Error(
-    `Could not uniquely identify contact "${trimmed}". Please provide a specific email address.`
+    `Multiple contacts found for "${trimmed}". Please provide a specific email address.`
   );
 }
 
@@ -203,23 +210,29 @@ export async function resolveToEmail(nameOrEmail: string): Promise<{ email: stri
 /**
  * Resolves an array of names and/or emails to email addresses with display names.
  * Each entry can be either a name or an email address.
+ * Resolves all attendees in parallel for better performance.
  */
 export async function resolveAttendeesToEmails(
   namesOrEmails: string[]
 ): Promise<{ email: string; displayName?: string }[]> {
-  const resolved: { email: string; displayName?: string }[] = [];
-
-  for (const nameOrEmail of namesOrEmails) {
-    try {
-      const result = await resolveToEmail(nameOrEmail);
-      resolved.push(result);
-    } catch (error: any) {
-      // Re-throw with context about which attendee failed
-      throw new Error(`Failed to resolve attendee "${nameOrEmail}": ${error.message}`);
-    }
+  try {
+    // Resolve all attendees in parallel
+    const resolved = await Promise.all(
+      namesOrEmails.map(async (nameOrEmail) => {
+        try {
+          return await resolveToEmail(nameOrEmail);
+        } catch (error) {
+          // Re-throw with context about which attendee failed
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Failed to resolve attendee "${nameOrEmail}": ${message}`);
+        }
+      })
+    );
+    return resolved;
+  } catch (error) {
+    // Re-throw the error as-is (already has context from the map)
+    throw error;
   }
-
-  return resolved;
 }
 
 // -----------------------------------------------------------------------------

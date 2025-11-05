@@ -428,13 +428,19 @@ async function startMcp() {
       const originalEvent = await getMeetingDetails(eventId);
 
       // Resolve attendees if provided
-      let resolvedAttendees;
+      let resolvedAttendees: { email: string; displayName?: string }[] | undefined;
       if (attendees !== undefined) {
         resolvedAttendees = await resolveAttendeesToEmails(attendees);
       }
 
       // Update Google Calendar
-      const updates: any = {};
+      const updates: {
+        summary?: string;
+        description?: string;
+        startISO?: string;
+        endISO?: string;
+        attendees?: { email: string; displayName?: string }[];
+      } = {};
       if (title !== undefined) updates.summary = title;
       if (description !== undefined) updates.description = description;
       if (startISO !== undefined) updates.startISO = startISO;
@@ -445,7 +451,14 @@ async function startMcp() {
 
       // Update Apple Calendar
       const calName = appleCalendarName || process.env.APPLE_CALENDAR_NAME || 'Meetings';
-      const appleUpdates: any = {};
+      const appleUpdates: {
+        title?: string;
+        notes?: string;
+        location?: string;
+        startISO?: string;
+        endISO?: string;
+        attendees?: { email: string; displayName?: string }[];
+      } = {};
 
       if (title !== undefined) appleUpdates.title = title;
       if (description !== undefined) {
@@ -545,8 +558,10 @@ async function runCli() {
 
   if (cmd === 'find') {
     const [attendeesCsv, startISO, endISO] = rest;
-    const attendees = attendeesCsv.split(',');
-    const cals = await freeBusy(startISO, endISO, attendees);
+    const attendees = attendeesCsv.split(',').map(a => a.trim());
+    const resolvedAttendees = await resolveAttendeesToEmails(attendees);
+    const attendeeEmails = resolvedAttendees.map(a => a.email);
+    const cals = await freeBusy(startISO, endISO, attendeeEmails);
     const busyMap = googleFreeBusyToBusyMap(cals);
     const slots = computeCommonFree({
       windowStartISO: startISO,
@@ -560,12 +575,13 @@ async function runCli() {
 
   if (cmd === 'create') {
     const [title, startISO, endISO, attendeesCsv] = rest;
-    const attendees = attendeesCsv.split(',').map((e) => ({ email: e }));
+    const attendees = attendeesCsv.split(',').map(a => a.trim());
+    const resolvedAttendees = await resolveAttendeesToEmails(attendees);
     const result = await createMeetEvent({
       summary: title,
       startISO,
       endISO,
-      attendees
+      attendees: resolvedAttendees
     });
     await addToAppleCalendar({
       calendarName: process.env.APPLE_CALENDAR_NAME || 'Meetings',
@@ -574,7 +590,7 @@ async function runCli() {
       location: result.meetUrl,
       startISO,
       endISO,
-      attendees
+      attendees: resolvedAttendees
     });
     console.log({ meetUrl: result.meetUrl, eventHtml: result.htmlLink });
     return;
@@ -583,8 +599,10 @@ async function runCli() {
   console.log(`Usage:
   pnpm cli auth
   pnpm cli search "alice"
-  pnpm cli find "a@x.com,b@y.com" 2025-10-09T09:00:00Z 2025-10-09T17:00:00Z
-  pnpm cli create "Design Sync" 2025-10-10T14:00:00Z 2025-10-10T14:30:00Z "a@x.com,b@y.com"
+  pnpm cli find "Alice,Bob" 2025-10-09T09:00:00Z 2025-10-09T17:00:00Z
+  pnpm cli create "Design Sync" 2025-10-10T14:00:00Z 2025-10-10T14:30:00Z "Alice,bob@example.com"
+
+  Note: Attendees can be specified by name or email address.
 `);
 }
 
