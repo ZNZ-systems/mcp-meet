@@ -27,6 +27,17 @@ export type GoogleClients = {
 let cached: GoogleClients | null = null;
 
 // -----------------------------------------------------------------------------
+// HELPER: Extract Meet URL from event
+// -----------------------------------------------------------------------------
+function extractMeetUrl(event: any): string {
+  return (
+    event.conferenceData?.entryPoints?.find((p: any) => p.entryPointType === 'video')?.uri ||
+    event.hangoutLink ||
+    ''
+  );
+}
+
+// -----------------------------------------------------------------------------
 // MAIN ENTRY: getGoogle()
 // -----------------------------------------------------------------------------
 export async function getGoogle(): Promise<GoogleClients> {
@@ -135,19 +146,23 @@ async function saveTokens(tokens: any) {
 // PEOPLE API — Search Contacts
 // -----------------------------------------------------------------------------
 export async function searchInvitees(query: string, limit = 10) {
-  const { people } = await getGoogle();
-  const resp = await people.people.searchContacts({
-    query,
-    pageSize: limit,
-    readMask: 'names,emailAddresses'
-  });
-  const results =
-    resp.data.results?.map((r) => {
-      const name = r.person?.names?.[0]?.displayName || '';
-      const email = r.person?.emailAddresses?.[0]?.value || '';
-      return { name, email };
-    }) ?? [];
-  return results.filter((r) => r.email);
+  try {
+    const { people } = await getGoogle();
+    const resp = await people.people.searchContacts({
+      query,
+      pageSize: limit,
+      readMask: 'names,emailAddresses'
+    });
+    const results =
+      resp.data.results?.map((r) => {
+        const name = r.person?.names?.[0]?.displayName || '';
+        const email = r.person?.emailAddresses?.[0]?.value || '';
+        return { name, email };
+      }) ?? [];
+    return results.filter((r) => r.email);
+  } catch (error: any) {
+    throw new Error(`Failed to search contacts for "${query}": ${error.message}`);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -158,20 +173,24 @@ export async function freeBusy(
   timeMaxISO: string,
   attendeesEmails: string[]
 ) {
-  const { calendar } = await getGoogle();
-  const items = [
-    ...(process.env.CALENDAR_IDS || 'primary').split(',').map((id) => ({ id: id.trim() })),
-    ...attendeesEmails.map((e) => ({ id: e.trim() }))
-  ];
-  const resp = await calendar.freebusy.query({
-    requestBody: {
-      timeMin: timeMinISO,
-      timeMax: timeMaxISO,
-      items
-    }
-  });
+  try {
+    const { calendar } = await getGoogle();
+    const items = [
+      ...(process.env.CALENDAR_IDS || 'primary').split(',').map((id) => ({ id: id.trim() })),
+      ...attendeesEmails.map((e) => ({ id: e.trim() }))
+    ];
+    const resp = await calendar.freebusy.query({
+      requestBody: {
+        timeMin: timeMinISO,
+        timeMax: timeMaxISO,
+        items
+      }
+    });
 
-  return resp.data.calendars;
+    return resp.data.calendars;
+  } catch (error: any) {
+    throw new Error(`Failed to query free/busy information for time range ${timeMinISO} to ${timeMaxISO}: ${error.message}`);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -190,42 +209,43 @@ export async function createMeetEvent({
   endISO: string;
   attendees: { email: string; displayName?: string }[];
 }) {
-  const { calendar } = await getGoogle();
+  try {
+    const { calendar } = await getGoogle();
 
-  const resp = await calendar.events.insert({
-    calendarId: 'primary',
-    conferenceDataVersion: 1,
-    sendUpdates: 'all',
-    requestBody: {
-      summary,
-      description,
-      start: { dateTime: startISO },
-      end: { dateTime: endISO },
-      attendees: attendees.map((a) => ({
-        email: a.email,
-        displayName: a.displayName
-      })),
-      conferenceData: {
-        createRequest: {
-          requestId: `meet-${Date.now()}`,
-          conferenceSolutionKey: { type: 'hangoutsMeet' }
+    const resp = await calendar.events.insert({
+      calendarId: 'primary',
+      conferenceDataVersion: 1,
+      sendUpdates: 'all',
+      requestBody: {
+        summary,
+        description,
+        start: { dateTime: startISO },
+        end: { dateTime: endISO },
+        attendees: attendees.map((a) => ({
+          email: a.email,
+          displayName: a.displayName
+        })),
+        conferenceData: {
+          createRequest: {
+            requestId: `meet-${Date.now()}`,
+            conferenceSolutionKey: { type: 'hangoutsMeet' }
+          }
         }
       }
-    }
-  });
+    });
 
-  const event = resp.data;
-  const meetUrl =
-    event.conferenceData?.entryPoints?.find((p) => p.entryPointType === 'video')?.uri ||
-    event.hangoutLink ||
-    '';
+    const event = resp.data;
+    const meetUrl = extractMeetUrl(event);
 
-  return {
-    id: event.id!,
-    htmlLink: event.htmlLink!,
-    meetUrl,
-    event
-  };
+    return {
+      id: event.id!,
+      htmlLink: event.htmlLink!,
+      meetUrl,
+      event
+    };
+  } catch (error: any) {
+    throw new Error(`Failed to create Google Meet event "${summary}": ${error.message}`);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -236,87 +256,87 @@ export async function listMeetings(
   timeMaxISO: string,
   maxResults = 50
 ) {
-  const { calendar } = await getGoogle();
+  try {
+    const { calendar } = await getGoogle();
 
-  const resp = await calendar.events.list({
-    calendarId: 'primary',
-    timeMin: timeMinISO,
-    timeMax: timeMaxISO,
-    maxResults,
-    singleEvents: true,
-    orderBy: 'startTime'
-  });
-
-  const events = resp.data.items || [];
-  
-  // Filter to only events with Meet links
-  const meetEvents = events
-    .filter((e) => {
-      const hasMeet = 
-        e.conferenceData?.entryPoints?.some((p) => p.entryPointType === 'video') ||
-        e.hangoutLink;
-      return hasMeet;
-    })
-    .map((e) => {
-      const meetUrl =
-        e.conferenceData?.entryPoints?.find((p) => p.entryPointType === 'video')?.uri ||
-        e.hangoutLink ||
-        '';
-      
-      return {
-        id: e.id!,
-        title: e.summary || '(No title)',
-        description: e.description || '',
-        startISO: e.start?.dateTime || e.start?.date || '',
-        endISO: e.end?.dateTime || e.end?.date || '',
-        meetUrl,
-        attendees: e.attendees?.map((a) => ({
-          email: a.email || '',
-          displayName: a.displayName || '',
-          responseStatus: a.responseStatus || ''
-        })) || [],
-        htmlLink: e.htmlLink || ''
-      };
+    const resp = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: timeMinISO,
+      timeMax: timeMaxISO,
+      maxResults,
+      singleEvents: true,
+      orderBy: 'startTime'
     });
 
-  return meetEvents;
+    const events = resp.data.items || [];
+
+    // Filter to only events with Meet links
+    const meetEvents = events
+      .filter((e) => {
+        const meetUrl = extractMeetUrl(e);
+        return meetUrl !== '';
+      })
+      .map((e) => {
+        const meetUrl = extractMeetUrl(e);
+
+        return {
+          id: e.id!,
+          title: e.summary || '(No title)',
+          description: e.description || '',
+          startISO: e.start?.dateTime || e.start?.date || '',
+          endISO: e.end?.dateTime || e.end?.date || '',
+          meetUrl,
+          attendees: e.attendees?.map((a) => ({
+            email: a.email || '',
+            displayName: a.displayName || '',
+            responseStatus: a.responseStatus || ''
+          })) || [],
+          htmlLink: e.htmlLink || ''
+        };
+      });
+
+    return meetEvents;
+  } catch (error: any) {
+    throw new Error(`Failed to list meetings for time range ${timeMinISO} to ${timeMaxISO}: ${error.message}`);
+  }
 }
 
 // -----------------------------------------------------------------------------
 // CALENDAR API — Get Meeting Details
 // -----------------------------------------------------------------------------
 export async function getMeetingDetails(eventId: string) {
-  const { calendar } = await getGoogle();
+  try {
+    const { calendar } = await getGoogle();
 
-  const resp = await calendar.events.get({
-    calendarId: 'primary',
-    eventId
-  });
+    const resp = await calendar.events.get({
+      calendarId: 'primary',
+      eventId
+    });
 
-  const event = resp.data;
-  const meetUrl =
-    event.conferenceData?.entryPoints?.find((p) => p.entryPointType === 'video')?.uri ||
-    event.hangoutLink ||
-    '';
+    const event = resp.data;
+    const meetUrl = extractMeetUrl(event);
 
-  return {
-    id: event.id!,
-    title: event.summary || '(No title)',
-    description: event.description || '',
-    startISO: event.start?.dateTime || event.start?.date || '',
-    endISO: event.end?.dateTime || event.end?.date || '',
-    meetUrl,
-    attendees: event.attendees?.map((a) => ({
-      email: a.email || '',
-      displayName: a.displayName || '',
-      responseStatus: a.responseStatus || ''
-    })) || [],
-    htmlLink: event.htmlLink || '',
-    created: event.created || '',
-    updated: event.updated || '',
-    status: event.status || '',
-    location: event.location || ''
-  };
+    return {
+      id: event.id!,
+      title: event.summary || '(No title)',
+      description: event.description || '',
+      startISO: event.start?.dateTime || event.start?.date || '',
+      endISO: event.end?.dateTime || event.end?.date || '',
+      meetUrl,
+      attendees: event.attendees?.map((a) => ({
+        email: a.email || '',
+        displayName: a.displayName || '',
+        responseStatus: a.responseStatus || ''
+      })) || [],
+      htmlLink: event.htmlLink || '',
+      created: event.created || '',
+      updated: event.updated || '',
+      status: event.status || '',
+      location: event.location || ''
+    };
+  } catch (error: any) {
+    throw new Error(`Failed to get meeting details for event ID "${eventId}": ${error.message}`);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -332,63 +352,68 @@ export async function updateMeetEvent(
     attendees?: { email: string; displayName?: string }[];
   }
 ) {
-  const { calendar } = await getGoogle();
+  try {
+    const { calendar } = await getGoogle();
 
-  // Build the update payload
-  const requestBody: any = {};
-  
-  if (updates.summary !== undefined) {
-    requestBody.summary = updates.summary;
-  }
-  if (updates.description !== undefined) {
-    requestBody.description = updates.description;
-  }
-  if (updates.startISO !== undefined) {
-    requestBody.start = { dateTime: updates.startISO };
-  }
-  if (updates.endISO !== undefined) {
-    requestBody.end = { dateTime: updates.endISO };
-  }
-  if (updates.attendees !== undefined) {
-    requestBody.attendees = updates.attendees.map((a) => ({
-      email: a.email,
-      displayName: a.displayName
-    }));
-  }
+    // Build the update payload
+    const requestBody: any = {};
 
-  const resp = await calendar.events.patch({
-    calendarId: 'primary',
-    eventId,
-    conferenceDataVersion: 1,
-    sendUpdates: 'all',
-    requestBody
-  });
+    if (updates.summary !== undefined) {
+      requestBody.summary = updates.summary;
+    }
+    if (updates.description !== undefined) {
+      requestBody.description = updates.description;
+    }
+    if (updates.startISO !== undefined) {
+      requestBody.start = { dateTime: updates.startISO };
+    }
+    if (updates.endISO !== undefined) {
+      requestBody.end = { dateTime: updates.endISO };
+    }
+    if (updates.attendees !== undefined) {
+      requestBody.attendees = updates.attendees.map((a) => ({
+        email: a.email,
+        displayName: a.displayName
+      }));
+    }
 
-  const event = resp.data;
-  const meetUrl =
-    event.conferenceData?.entryPoints?.find((p) => p.entryPointType === 'video')?.uri ||
-    event.hangoutLink ||
-    '';
+    const resp = await calendar.events.patch({
+      calendarId: 'primary',
+      eventId,
+      conferenceDataVersion: 1,
+      sendUpdates: 'all',
+      requestBody
+    });
 
-  return {
-    id: event.id!,
-    htmlLink: event.htmlLink!,
-    meetUrl,
-    event
-  };
+    const event = resp.data;
+    const meetUrl = extractMeetUrl(event);
+
+    return {
+      id: event.id!,
+      htmlLink: event.htmlLink!,
+      meetUrl,
+      event
+    };
+  } catch (error: any) {
+    throw new Error(`Failed to update meeting with event ID "${eventId}": ${error.message}`);
+  }
 }
 
 // -----------------------------------------------------------------------------
 // CALENDAR API — Delete Meeting
 // -----------------------------------------------------------------------------
 export async function deleteMeetEvent(eventId: string) {
-  const { calendar } = await getGoogle();
+  try {
+    const { calendar } = await getGoogle();
 
-  await calendar.events.delete({
-    calendarId: 'primary',
-    eventId,
-    sendUpdates: 'all'
-  });
+    await calendar.events.delete({
+      calendarId: 'primary',
+      eventId,
+      sendUpdates: 'all'
+    });
 
-  return { success: true, eventId };
+    return { success: true, eventId };
+  } catch (error: any) {
+    throw new Error(`Failed to delete meeting with event ID "${eventId}": ${error.message}`);
+  }
 }
