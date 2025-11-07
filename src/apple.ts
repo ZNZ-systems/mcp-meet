@@ -161,11 +161,16 @@ end tell
 
   try {
     await execFileAsync('/usr/bin/osascript', ['-e', script]);
-    return { success: true };
+    return { success: true, message: 'Apple Calendar event updated successfully' };
   } catch (error: any) {
     // Event might not exist in Apple Calendar (e.g., user deleted it manually)
-    console.warn('Apple Calendar update failed:', error.message);
-    return { success: false, error: error.message };
+    const errorMessage = `Failed to update Apple Calendar event: ${error.message}. The event may have been manually deleted or the calendar "${calendarName}" may not exist.`;
+    console.error(`❌ ${errorMessage}`);
+    return {
+      success: false,
+      error: errorMessage,
+      suggestion: 'The Google Calendar event was updated successfully, but the Apple Calendar sync failed. You may need to manually update the event in Apple Calendar.'
+    };
   }
 }
 
@@ -214,10 +219,15 @@ end tell
 
   try {
     await execFileAsync('/usr/bin/osascript', ['-e', script]);
-    return { success: true };
+    return { success: true, message: 'Apple Calendar event deleted successfully' };
   } catch (error: any) {
     // Event might not exist in Apple Calendar (e.g., user deleted it manually)
-    console.warn('Apple Calendar delete failed:', error.message);
-    return { success: false, error: error.message };
+    const errorMessage = `Failed to delete Apple Calendar event: ${error.message}. The event may have already been deleted or the calendar "${calendarName}" may not exist.`;
+    console.error(`❌ ${errorMessage}`);
+    return {
+      success: false,
+      error: errorMessage,
+      suggestion: 'The Google Calendar event was deleted successfully, but the Apple Calendar sync failed. The event may have already been removed from Apple Calendar.'
+    };
   }
 }

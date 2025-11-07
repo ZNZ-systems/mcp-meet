@@ -38,10 +38,72 @@ function extractMeetUrl(event: any): string {
 }
 
 // -----------------------------------------------------------------------------
+// HELPER: Retry with exponential backoff
+// -----------------------------------------------------------------------------
+async function retryWithBackoff<T>(
+  operation: () => Promise<T>,
+  operationName: string,
+  maxRetries = 4
+): Promise<T> {
+  let lastError: any;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error: any) {
+      lastError = error;
+
+      // Check if error is retryable
+      const isRetryable = isRetryableError(error);
+      const isLastAttempt = attempt === maxRetries;
+
+      if (!isRetryable || isLastAttempt) {
+        throw error;
+      }
+
+      // Calculate exponential backoff: 1s, 2s, 4s, 8s
+      const delayMs = Math.pow(2, attempt) * 1000;
+      console.error(
+        `⚠️ ${operationName} failed (attempt ${attempt + 1}/${maxRetries + 1}): ${error.message}. Retrying in ${delayMs / 1000}s...`
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  throw lastError;
+}
+
+// Check if an error is retryable
+function isRetryableError(error: any): boolean {
+  // Network errors
+  if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || error.code === 'ENOTFOUND') {
+    return true;
+  }
+
+  // HTTP status codes that are retryable
+  const retryableStatusCodes = [429, 500, 502, 503, 504];
+  if (error.response?.status && retryableStatusCodes.includes(error.response.status)) {
+    return true;
+  }
+
+  // Google API specific rate limit errors
+  if (error.message?.includes('quota') || error.message?.includes('rate limit')) {
+    return true;
+  }
+
+  return false;
+}
+
+// -----------------------------------------------------------------------------
 // MAIN ENTRY: getGoogle()
 // -----------------------------------------------------------------------------
 export async function getGoogle(): Promise<GoogleClients> {
-  if (cached) return cached;
+  if (cached) {
+    // Check if tokens need refresh
+    await refreshTokensIfNeeded(cached.auth);
+    return cached;
+  }
 
   const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI } = process.env;
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI) {
@@ -57,6 +119,15 @@ export async function getGoogle(): Promise<GoogleClients> {
   const tokens = await loadTokens();
   if (tokens) {
     oauth2.setCredentials(tokens);
+    // Set up automatic token refresh
+    oauth2.on('tokens', async (newTokens) => {
+      // Merge new tokens with existing ones
+      const currentTokens = oauth2.credentials;
+      const updatedTokens = { ...currentTokens, ...newTokens };
+      await saveTokens(updatedTokens);
+    });
+    // Check if tokens need refresh on initial load
+    await refreshTokensIfNeeded(oauth2);
   } else {
     await interactiveAuth(oauth2);
   }
@@ -66,6 +137,36 @@ export async function getGoogle(): Promise<GoogleClients> {
 
   cached = { calendar, people, auth: oauth2 };
   return cached;
+}
+
+// -----------------------------------------------------------------------------
+// TOKEN REFRESH HELPER
+// -----------------------------------------------------------------------------
+async function refreshTokensIfNeeded(oauth2: any): Promise<void> {
+  const credentials = oauth2.credentials;
+
+  // If no credentials or no expiry time, skip
+  if (!credentials || !credentials.expiry_date) {
+    return;
+  }
+
+  // Check if token expires in the next 5 minutes (300000 ms)
+  const expiryTime = credentials.expiry_date;
+  const now = Date.now();
+  const bufferTime = 5 * 60 * 1000; // 5 minutes
+
+  if (expiryTime - now < bufferTime) {
+    try {
+      console.error('🔄 Refreshing expired access token...');
+      const { credentials: newCredentials } = await oauth2.refreshAccessToken();
+      oauth2.setCredentials(newCredentials);
+      await saveTokens(newCredentials);
+      console.error('✅ Access token refreshed successfully');
+    } catch (error: any) {
+      console.error('❌ Failed to refresh token:', error.message);
+      throw new Error('Token refresh failed. Please re-authenticate by running: pnpm cli auth');
+    }
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -148,11 +249,14 @@ async function saveTokens(tokens: any) {
 export async function searchInvitees(query: string, limit = 10) {
   try {
     const { people } = await getGoogle();
-    const resp = await people.people.searchContacts({
-      query,
-      pageSize: limit,
-      readMask: 'names,emailAddresses'
-    });
+    const resp = await retryWithBackoff(
+      () => people.people.searchContacts({
+        query,
+        pageSize: limit,
+        readMask: 'names,emailAddresses'
+      }),
+      `Search contacts for "${query}"`
+    );
     const results =
       resp.data.results?.map((r) => {
         const name = r.person?.names?.[0]?.displayName || '';
@@ -177,10 +281,23 @@ export async function searchInvitees(query: string, limit = 10) {
 export async function resolveToEmail(nameOrEmail: string): Promise<{ email: string; displayName?: string }> {
   const trimmed = nameOrEmail.trim();
 
-  // Check if it's already an email (contains @ and basic email pattern)
-  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!trimmed) {
+    throw new Error('Attendee name or email cannot be empty');
+  }
+
+  // Check if it's already an email with improved validation
+  // RFC 5322 compliant email pattern (simplified)
+  const emailPattern = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
   if (emailPattern.test(trimmed)) {
-    return { email: trimmed };
+    // Validate email format more thoroughly
+    if (trimmed.length > 254) {
+      throw new Error(`Email address "${trimmed}" is too long (maximum 254 characters)`);
+    }
+    const [localPart, domain] = trimmed.split('@');
+    if (localPart.length > 64) {
+      throw new Error(`Email address "${trimmed}" has an invalid local part (maximum 64 characters before @)`);
+    }
+    return { email: trimmed.toLowerCase() };
   }
 
   // Not an email, search contacts by name
@@ -188,19 +305,20 @@ export async function resolveToEmail(nameOrEmail: string): Promise<{ email: stri
 
   // Only use the contact if we found exactly one match with an email
   if (results.length === 1) {
-    return { email: results[0].email, displayName: results[0].name };
+    return { email: results[0].email.toLowerCase(), displayName: results[0].name };
   }
 
   // Provide clear error messages for different scenarios
   if (results.length === 0) {
     throw new Error(
-      `No contact found for "${trimmed}". Please provide a specific email address.`
+      `No contact found for "${trimmed}". Please provide their email address directly or check the spelling of their name.`
     );
   }
 
-  // Multiple matches found
+  // Multiple matches found - provide helpful suggestions
+  const matchList = results.slice(0, 5).map(r => `  - ${r.name} (${r.email})`).join('\n');
   throw new Error(
-    `Multiple contacts found for "${trimmed}". Please provide a specific email address.`
+    `Multiple contacts found for "${trimmed}":\n${matchList}\n\nPlease provide a specific email address or use a more specific name.`
   );
 }
 
@@ -211,10 +329,15 @@ export async function resolveToEmail(nameOrEmail: string): Promise<{ email: stri
  * Resolves an array of names and/or emails to email addresses with display names.
  * Each entry can be either a name or an email address.
  * Resolves all attendees in parallel for better performance.
+ * Also detects and removes duplicate attendees.
  */
 export async function resolveAttendeesToEmails(
   namesOrEmails: string[]
 ): Promise<{ email: string; displayName?: string }[]> {
+  if (!namesOrEmails || namesOrEmails.length === 0) {
+    throw new Error('At least one attendee is required');
+  }
+
   try {
     // Resolve all attendees in parallel
     const resolved = await Promise.all(
@@ -228,7 +351,26 @@ export async function resolveAttendeesToEmails(
         }
       })
     );
-    return resolved;
+
+    // Check for duplicate email addresses
+    const emailMap = new Map<string, { email: string; displayName?: string }>();
+    const duplicates: string[] = [];
+
+    for (const attendee of resolved) {
+      const normalizedEmail = attendee.email.toLowerCase();
+      if (emailMap.has(normalizedEmail)) {
+        duplicates.push(attendee.email);
+      } else {
+        emailMap.set(normalizedEmail, attendee);
+      }
+    }
+
+    if (duplicates.length > 0) {
+      console.error(`⚠️ Removed duplicate attendees: ${duplicates.join(', ')}`);
+    }
+
+    // Return unique attendees
+    return Array.from(emailMap.values());
   } catch (error) {
     // Re-throw the error as-is (already has context from the map)
     throw error;
@@ -249,13 +391,16 @@ export async function freeBusy(
       ...(process.env.CALENDAR_IDS || 'primary').split(',').map((id) => ({ id: id.trim() })),
       ...attendeesEmails.map((e) => ({ id: e.trim() }))
     ];
-    const resp = await calendar.freebusy.query({
-      requestBody: {
-        timeMin: timeMinISO,
-        timeMax: timeMaxISO,
-        items
-      }
-    });
+    const resp = await retryWithBackoff(
+      () => calendar.freebusy.query({
+        requestBody: {
+          timeMin: timeMinISO,
+          timeMax: timeMaxISO,
+          items
+        }
+      }),
+      `Query free/busy for ${timeMinISO} to ${timeMaxISO}`
+    );
 
     return resp.data.calendars;
   } catch (error: any) {
@@ -282,27 +427,30 @@ export async function createMeetEvent({
   try {
     const { calendar } = await getGoogle();
 
-    const resp = await calendar.events.insert({
-      calendarId: 'primary',
-      conferenceDataVersion: 1,
-      sendUpdates: 'all',
-      requestBody: {
-        summary,
-        description,
-        start: { dateTime: startISO },
-        end: { dateTime: endISO },
-        attendees: attendees.map((a) => ({
-          email: a.email,
-          displayName: a.displayName
-        })),
-        conferenceData: {
-          createRequest: {
-            requestId: `meet-${Date.now()}`,
-            conferenceSolutionKey: { type: 'hangoutsMeet' }
+    const resp = await retryWithBackoff(
+      () => calendar.events.insert({
+        calendarId: 'primary',
+        conferenceDataVersion: 1,
+        sendUpdates: 'all',
+        requestBody: {
+          summary,
+          description,
+          start: { dateTime: startISO },
+          end: { dateTime: endISO },
+          attendees: attendees.map((a) => ({
+            email: a.email,
+            displayName: a.displayName
+          })),
+          conferenceData: {
+            createRequest: {
+              requestId: `meet-${Date.now()}`,
+              conferenceSolutionKey: { type: 'hangoutsMeet' }
+            }
           }
         }
-      }
-    });
+      }),
+      `Create meeting "${summary}"`
+    );
 
     const event = resp.data;
     const meetUrl = extractMeetUrl(event);
@@ -329,14 +477,17 @@ export async function listMeetings(
   try {
     const { calendar } = await getGoogle();
 
-    const resp = await calendar.events.list({
-      calendarId: 'primary',
-      timeMin: timeMinISO,
-      timeMax: timeMaxISO,
-      maxResults,
-      singleEvents: true,
-      orderBy: 'startTime'
-    });
+    const resp = await retryWithBackoff(
+      () => calendar.events.list({
+        calendarId: 'primary',
+        timeMin: timeMinISO,
+        timeMax: timeMaxISO,
+        maxResults,
+        singleEvents: true,
+        orderBy: 'startTime'
+      }),
+      `List meetings for ${timeMinISO} to ${timeMaxISO}`
+    );
 
     const events = resp.data.items || [];
 
@@ -378,10 +529,13 @@ export async function getMeetingDetails(eventId: string) {
   try {
     const { calendar } = await getGoogle();
 
-    const resp = await calendar.events.get({
-      calendarId: 'primary',
-      eventId
-    });
+    const resp = await retryWithBackoff(
+      () => calendar.events.get({
+        calendarId: 'primary',
+        eventId
+      }),
+      `Get meeting details for event ${eventId}`
+    );
 
     const event = resp.data;
     const meetUrl = extractMeetUrl(event);
@@ -447,13 +601,16 @@ export async function updateMeetEvent(
       }));
     }
 
-    const resp = await calendar.events.patch({
-      calendarId: 'primary',
-      eventId,
-      conferenceDataVersion: 1,
-      sendUpdates: 'all',
-      requestBody
-    });
+    const resp = await retryWithBackoff(
+      () => calendar.events.patch({
+        calendarId: 'primary',
+        eventId,
+        conferenceDataVersion: 1,
+        sendUpdates: 'all',
+        requestBody
+      }),
+      `Update meeting ${eventId}`
+    );
 
     const event = resp.data;
     const meetUrl = extractMeetUrl(event);
@@ -476,11 +633,14 @@ export async function deleteMeetEvent(eventId: string) {
   try {
     const { calendar } = await getGoogle();
 
-    await calendar.events.delete({
-      calendarId: 'primary',
-      eventId,
-      sendUpdates: 'all'
-    });
+    await retryWithBackoff(
+      () => calendar.events.delete({
+        calendarId: 'primary',
+        eventId,
+        sendUpdates: 'all'
+      }),
+      `Delete meeting ${eventId}`
+    );
 
     return { success: true, eventId };
   } catch (error: any) {

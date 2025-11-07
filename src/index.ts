@@ -217,7 +217,7 @@ async function startMcp() {
         attendees: resolvedAttendees
       });
 
-      await addToAppleCalendar({
+      const appleResult = await addToAppleCalendar({
         calendarName: appleCalendarName || process.env.APPLE_CALENDAR_NAME || 'Meetings',
         title,
         notes: `Google Meet: ${result.meetUrl}\n\n${description || ''}`,
@@ -227,10 +227,20 @@ async function startMcp() {
         attendees: resolvedAttendees
       });
 
-      const payload = { meetUrl: result.meetUrl, eventHtml: result.htmlLink };
+      const payload = {
+        meetUrl: result.meetUrl,
+        eventHtml: result.htmlLink,
+        appleCalendarSync: appleResult
+      };
+
+      let message = `✅ Meeting created.\n🔗 Meet: ${result.meetUrl}`;
+      if (!appleResult.ok) {
+        message += `\n⚠️ Warning: Apple Calendar sync failed. The meeting was created in Google Calendar but not synced to Apple Calendar.`;
+      }
+
       return {
         content: [
-          { type: 'text', text: `✅ Meeting created.\n🔗 Meet: ${result.meetUrl}\n\n${JSON.stringify(payload, null, 2)}` } as const
+          { type: 'text', text: `${message}\n\n${JSON.stringify(payload, null, 2)}` } as const
         ]
       };
     }
@@ -317,7 +327,7 @@ async function startMcp() {
         attendees: resolvedAttendees
       });
 
-      await addToAppleCalendar({
+      const appleResult = await addToAppleCalendar({
         calendarName: appleCalendarName || process.env.APPLE_CALENDAR_NAME || 'Meetings',
         title,
         notes: `Google Meet: ${result.meetUrl}\n\n${description || ''}`,
@@ -330,13 +340,20 @@ async function startMcp() {
       const payload = {
         scheduled: { startISO: pick.startISO, endISO: pick.endISO },
         meetUrl: result.meetUrl,
-        eventHtml: result.htmlLink
+        eventHtml: result.htmlLink,
+        appleCalendarSync: appleResult
       };
+
+      let message = `✅ Scheduled "${title}" from ${pick.startISO} → ${pick.endISO}\n🔗 Meet: ${result.meetUrl}`;
+      if (!appleResult.ok) {
+        message += `\n⚠️ Warning: Apple Calendar sync failed. The meeting was scheduled in Google Calendar but not synced to Apple Calendar.`;
+      }
+
       return {
         content: [
           {
             type: 'text',
-            text: `✅ Scheduled "${title}" from ${pick.startISO} → ${pick.endISO}\n🔗 Meet: ${result.meetUrl}\n\n${JSON.stringify(payload, null, 2)}`
+            text: `${message}\n\n${JSON.stringify(payload, null, 2)}`
           } as const
         ]
       };
@@ -481,11 +498,16 @@ async function startMcp() {
         appleCalendar: appleResult
       };
 
+      let message = `✅ Meeting updated.\n🔗 Meet: ${result.meetUrl}`;
+      if (!appleResult.success) {
+        message += `\n⚠️ Warning: ${appleResult.suggestion}`;
+      }
+
       return {
         content: [
           {
             type: 'text',
-            text: `✅ Meeting updated.\n🔗 Meet: ${result.meetUrl}\n\n${JSON.stringify(payload, null, 2)}`
+            text: `${message}\n\n${JSON.stringify(payload, null, 2)}`
           } as const
         ]
       };
@@ -523,11 +545,18 @@ async function startMcp() {
         appleCalendar: appleResult
       };
 
+      let message = `✅ Meeting deleted from Google Calendar.`;
+      if (!appleResult.success) {
+        message += `\n⚠️ Warning: ${appleResult.suggestion}`;
+      } else {
+        message += `\n✅ Meeting also deleted from Apple Calendar.`;
+      }
+
       return {
         content: [
           {
             type: 'text',
-            text: `✅ Meeting deleted.\n\n${JSON.stringify(payload, null, 2)}`
+            text: `${message}\n\n${JSON.stringify(payload, null, 2)}`
           } as const
         ]
       };
