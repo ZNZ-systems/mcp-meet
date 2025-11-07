@@ -87,7 +87,21 @@ function isRetryableError(error: any): boolean {
     return true;
   }
 
-  // Google API specific rate limit errors
+  // Google API specific errors - check structured error fields first
+  // Google API errors have an `errors` array with `reason` field
+  const reasons = error.response?.data?.error?.errors?.map((e: any) => e.reason) || [];
+  const retryableReasons = [
+    'rateLimitExceeded',
+    'quotaExceeded',
+    'userRateLimitExceeded',
+    'backendError',
+    'internalError'
+  ];
+  if (reasons.some((reason: string) => retryableReasons.includes(reason))) {
+    return true;
+  }
+
+  // Fallback to message checking for backwards compatibility
   if (error.message?.includes('quota') || error.message?.includes('rate limit')) {
     return true;
   }
@@ -157,11 +171,11 @@ async function refreshTokensIfNeeded(oauth2: any): Promise<void> {
 
   if (expiryTime - now < bufferTime) {
     try {
-      console.error('🔄 Refreshing expired access token...');
+      console.log('🔄 Refreshing expired access token...');
       const { credentials: newCredentials } = await oauth2.refreshAccessToken();
       oauth2.setCredentials(newCredentials);
       await saveTokens(newCredentials);
-      console.error('✅ Access token refreshed successfully');
+      console.log('✅ Access token refreshed successfully');
     } catch (error: any) {
       console.error('❌ Failed to refresh token:', error.message);
       throw new Error('Token refresh failed. Please re-authenticate by running: pnpm cli auth');
@@ -366,7 +380,7 @@ export async function resolveAttendeesToEmails(
     }
 
     if (duplicates.length > 0) {
-      console.error(`⚠️ Removed duplicate attendees: ${duplicates.join(', ')}`);
+      console.warn(`⚠️ Removed duplicate attendees: ${duplicates.join(', ')}`);
     }
 
     // Return unique attendees

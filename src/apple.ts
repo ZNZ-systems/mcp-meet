@@ -49,8 +49,20 @@ tell application "Calendar"
   show theEvent
 end tell
 `;
-  await execFileAsync('/usr/bin/osascript', ['-e', script]);
-  return { ok: true };
+
+  try {
+    await execFileAsync('/usr/bin/osascript', ['-e', script]);
+    return { ok: true, message: 'Apple Calendar event created successfully' };
+  } catch (error: any) {
+    // Calendar creation might fail (e.g., AppleScript permissions, invalid calendar name)
+    const errorMessage = `Failed to create Apple Calendar event: ${error.message}. The calendar "${calendarName}" may not exist or you may need to grant Calendar permissions.`;
+    console.error(`❌ ${errorMessage}`);
+    return {
+      ok: false,
+      error: errorMessage,
+      suggestion: 'The Google Calendar event was created successfully, but the Apple Calendar sync failed. Check that Calendar app has necessary permissions and the calendar exists.'
+    };
+  }
 }
 
 function escapeApple(s: string) {
