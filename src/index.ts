@@ -3,7 +3,22 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-import { getGoogle, searchInvitees, freeBusy, createMeetEvent, listMeetings, getMeetingDetails, updateMeetEvent, deleteMeetEvent, resolveAttendeesToEmails } from './google.js';
+import {
+  getGoogle,
+  searchInvitees,
+  freeBusy,
+  createMeetEvent,
+  listMeetings,
+  getMeetingDetails,
+  updateMeetEvent,
+  deleteMeetEvent,
+  resolveAttendeesToEmails,
+  listAccounts,
+  removeAccount,
+  setDefaultAccount,
+  authenticateAccount,
+  resolveAccount
+} from './google.js';
 import { addToAppleCalendar, updateAppleCalendarEvent, deleteAppleCalendarEvent } from './apple.js';
 import { computeCommonFree, googleFreeBusyToBusyMap } from './availability.js';
 import { parseDateWindow } from './date-utils.js';
@@ -92,8 +107,37 @@ function pickContiguous(
 async function startMcp() {
   const server = new McpServer({
     name: 'mcp-meet',
-    version: '0.4.0'
+    version: '0.6.0'
   });
+
+  // Tool: list_accounts
+  server.registerTool(
+    'list_accounts',
+    {
+      title: 'List configured accounts',
+      description: 'List all configured Google accounts with their labels. Use this to understand which accounts are available before scheduling meetings.',
+      inputSchema: {}
+    },
+    async () => {
+      const accounts = await listAccounts();
+      if (accounts.length === 0) {
+        return {
+          content: [
+            { type: 'text', text: '❌ No accounts configured. Please run: pnpm cli auth' } as const
+          ]
+        };
+      }
+      const payload = { accounts };
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `✅ ${accounts.length} account(s) configured.\n\n${JSON.stringify(payload, null, 2)}`
+          } as const
+        ]
+      };
+    }
+  );
 
   // Tool: search_invitees
   server.registerTool(
@@ -101,21 +145,22 @@ async function startMcp() {
     {
       title: 'Search invitees',
       description: 'Find contacts by name/email via Google People API.',
-      // ZodRawShape (shape object), not z.object(...)
       inputSchema: {
         query: z.string(),
-        limit: z.number().int().positive().optional()
+        limit: z.number().int().positive().optional(),
+        account: z.string().optional().describe('Account email or label (e.g., "work"). If omitted, uses inference or default.')
       }
-      // No outputSchema (prevents schema crashes in some SDK builds)
     },
-    async ({ query, limit }) => {
+    async ({ query, limit, account }) => {
+      const resolvedAccount = await resolveAccount(account);
+      await getGoogle(resolvedAccount || undefined);
       const out = await searchInvitees(query, limit ?? 10);
-      const payload = { results: out };
+      const payload = { results: out, usedAccount: resolvedAccount };
       return {
         content: [
-          { 
-            type: 'text', 
-            text: `✅ Found ${out.length} contact(s) for "${query}".\n\n${JSON.stringify(payload, null, 2)}` 
+          {
+            type: 'text',
+            text: `✅ Found ${out.length} contact(s) for "${query}".\n\n${JSON.stringify(payload, null, 2)}`
           } as const
         ]
       };
@@ -133,11 +178,11 @@ async function startMcp() {
         window: z.string().optional(),
         windowStartISO: z.string().optional(),
         windowEndISO: z.string().optional(),
-        slotMinutes: z.number().int().positive().optional()
+        slotMinutes: z.number().int().positive().optional(),
+        account: z.string().optional().describe('Account email or label (e.g., "work"). If omitted, infers from attendee domains or uses default.')
       }
-      // No outputSchema
     },
-    async ({ attendees, window, windowStartISO, windowEndISO, slotMinutes }) => {
+    async ({ attendees, window, windowStartISO, windowEndISO, slotMinutes, account }) => {
       if (window && (windowStartISO || windowEndISO)) {
         throw new Error('Cannot provide both `window` and ISO start/end times.');
       }
@@ -162,6 +207,10 @@ async function startMcp() {
       const resolvedAttendees = await resolveAttendeesToEmails(attendees);
       const attendeeEmails = resolvedAttendees.map(a => a.email);
 
+      // Resolve account (with domain inference from attendees)
+      const resolvedAccount = await resolveAccount(account, attendeeEmails);
+      await getGoogle(resolvedAccount || undefined);
+
       const calendars = await freeBusy(start, end, attendeeEmails);
       const busyMap = googleFreeBusyToBusyMap(calendars);
       const slots = computeCommonFree({
@@ -171,7 +220,7 @@ async function startMcp() {
         slotMinutes: slotMinutes ?? 30
       });
       const top = slots.slice(0, 50);
-      const payload = { results: top };
+      const payload = { results: top, usedAccount: resolvedAccount };
       const human =
         top.length === 0
           ? '❌ No common free slots in the window.'
@@ -197,17 +246,22 @@ async function startMcp() {
         startISO: z.string(),
         endISO: z.string(),
         attendees: z.array(z.string()),
-        appleCalendarName: z.string().optional()
+        appleCalendarName: z.string().optional(),
+        account: z.string().optional().describe('Account email or label (e.g., "work"). If omitted, infers from attendee domains or uses default.')
       }
-      // No outputSchema
     },
-    async ({ title, description, startISO, endISO, attendees, appleCalendarName }) => {
+    async ({ title, description, startISO, endISO, attendees, appleCalendarName, account }) => {
       validateISODate(startISO, 'startISO');
       validateISODate(endISO, 'endISO');
       validateDateRange(startISO, endISO);
 
       // Resolve attendees (names or emails) to email addresses
       const resolvedAttendees = await resolveAttendeesToEmails(attendees);
+      const attendeeEmails = resolvedAttendees.map(a => a.email);
+
+      // Resolve account (with domain inference from attendees)
+      const resolvedAccount = await resolveAccount(account, attendeeEmails);
+      await getGoogle(resolvedAccount || undefined);
 
       const result = await createMeetEvent({
         summary: title,
@@ -230,7 +284,8 @@ async function startMcp() {
       const payload = {
         meetUrl: result.meetUrl,
         eventHtml: result.htmlLink,
-        appleCalendarSync: appleResult
+        appleCalendarSync: appleResult,
+        usedAccount: resolvedAccount
       };
 
       let message = `✅ Meeting created.\n🔗 Meet: ${result.meetUrl}`;
@@ -261,9 +316,9 @@ async function startMcp() {
         window: z.string().optional(),
         windowStartISO: z.string().optional(),
         windowEndISO: z.string().optional(),
-        appleCalendarName: z.string().optional()
+        appleCalendarName: z.string().optional(),
+        account: z.string().optional().describe('Account email or label (e.g., "work"). If omitted, infers from attendee domains or uses default.')
       }
-      // No outputSchema
     },
     async ({
       title,
@@ -273,7 +328,8 @@ async function startMcp() {
       window,
       windowStartISO,
       windowEndISO,
-      appleCalendarName
+      appleCalendarName,
+      account
     }) => {
       if (window && (windowStartISO || windowEndISO)) {
         throw new Error('Cannot provide both `window` and ISO start/end times.');
@@ -299,6 +355,10 @@ async function startMcp() {
       // Resolve attendees (names or emails) to email addresses
       const resolvedAttendees = await resolveAttendeesToEmails(attendees);
       const attendeeEmails = resolvedAttendees.map(a => a.email);
+
+      // Resolve account (with domain inference from attendees)
+      const resolvedAccount = await resolveAccount(account, attendeeEmails);
+      await getGoogle(resolvedAccount || undefined);
 
       const calendars = await freeBusy(start, end, attendeeEmails);
       const busyMap = googleFreeBusyToBusyMap(calendars);
@@ -341,7 +401,8 @@ async function startMcp() {
         scheduled: { startISO: pick.startISO, endISO: pick.endISO },
         meetUrl: result.meetUrl,
         eventHtml: result.htmlLink,
-        appleCalendarSync: appleResult
+        appleCalendarSync: appleResult,
+        usedAccount: resolvedAccount
       };
 
       let message = `✅ Scheduled "${title}" from ${pick.startISO} → ${pick.endISO}\n🔗 Meet: ${result.meetUrl}`;
@@ -369,17 +430,21 @@ async function startMcp() {
       inputSchema: {
         windowStartISO: z.string(),
         windowEndISO: z.string(),
-        maxResults: z.number().int().positive().optional()
+        maxResults: z.number().int().positive().optional(),
+        account: z.string().optional().describe('Account email or label (e.g., "work"). If omitted, uses default.')
       }
     },
-    async ({ windowStartISO, windowEndISO, maxResults }) => {
+    async ({ windowStartISO, windowEndISO, maxResults, account }) => {
       validateISODate(windowStartISO, 'windowStartISO');
       validateISODate(windowEndISO, 'windowEndISO');
       validateDateRange(windowStartISO, windowEndISO);
       validateTimeWindow(windowStartISO, windowEndISO, 365); // Max 1 year for listing
 
+      const resolvedAccount = await resolveAccount(account);
+      await getGoogle(resolvedAccount || undefined);
+
       const meetings = await listMeetings(windowStartISO, windowEndISO, maxResults ?? 50);
-      const payload = { meetings };
+      const payload = { meetings, usedAccount: resolvedAccount };
       return {
         content: [
           {
@@ -398,12 +463,16 @@ async function startMcp() {
       title: 'Get meeting details',
       description: 'Get detailed information about a specific meeting by event ID.',
       inputSchema: {
-        eventId: z.string()
+        eventId: z.string(),
+        account: z.string().optional().describe('Account email or label (e.g., "work"). If omitted, uses default.')
       }
     },
-    async ({ eventId }) => {
+    async ({ eventId, account }) => {
+      const resolvedAccount = await resolveAccount(account);
+      await getGoogle(resolvedAccount || undefined);
+
       const details = await getMeetingDetails(eventId);
-      const payload = { meeting: details };
+      const payload = { meeting: details, usedAccount: resolvedAccount };
       return {
         content: [
           {
@@ -428,10 +497,11 @@ async function startMcp() {
         startISO: z.string().optional(),
         endISO: z.string().optional(),
         attendees: z.array(z.string()).optional(),
-        appleCalendarName: z.string().optional()
+        appleCalendarName: z.string().optional(),
+        account: z.string().optional().describe('Account email or label (e.g., "work"). If omitted, uses default.')
       }
     },
-    async ({ eventId, title, description, startISO, endISO, attendees, appleCalendarName }) => {
+    async ({ eventId, title, description, startISO, endISO, attendees, appleCalendarName, account }) => {
       // Validate ISO dates if provided
       if (startISO !== undefined) validateISODate(startISO, 'startISO');
       if (endISO !== undefined) validateISODate(endISO, 'endISO');
@@ -440,6 +510,10 @@ async function startMcp() {
       if (startISO !== undefined && endISO !== undefined) {
         validateDateRange(startISO, endISO);
       }
+
+      // Resolve account
+      const resolvedAccount = await resolveAccount(account);
+      await getGoogle(resolvedAccount || undefined);
 
       // Get original event details for Apple Calendar lookup
       const originalEvent = await getMeetingDetails(eventId);
@@ -495,7 +569,8 @@ async function startMcp() {
 
       const payload = {
         googleCalendar: { meetUrl: result.meetUrl, eventHtml: result.htmlLink },
-        appleCalendar: appleResult
+        appleCalendar: appleResult,
+        usedAccount: resolvedAccount
       };
 
       let message = `✅ Meeting updated.\n🔗 Meet: ${result.meetUrl}`;
@@ -522,10 +597,15 @@ async function startMcp() {
       description: 'Delete a Google Meet meeting and remove it from Apple Calendar.',
       inputSchema: {
         eventId: z.string(),
-        appleCalendarName: z.string().optional()
+        appleCalendarName: z.string().optional(),
+        account: z.string().optional().describe('Account email or label (e.g., "work"). If omitted, uses default.')
       }
     },
-    async ({ eventId, appleCalendarName }) => {
+    async ({ eventId, appleCalendarName, account }) => {
+      // Resolve account
+      const resolvedAccount = await resolveAccount(account);
+      await getGoogle(resolvedAccount || undefined);
+
       // Get event details before deletion for Apple Calendar lookup
       const eventDetails = await getMeetingDetails(eventId);
 
@@ -542,7 +622,8 @@ async function startMcp() {
 
       const payload = {
         googleCalendar: googleResult,
-        appleCalendar: appleResult
+        appleCalendar: appleResult,
+        usedAccount: resolvedAccount
       };
 
       let message = `✅ Meeting deleted from Google Calendar.`;
@@ -569,13 +650,91 @@ async function startMcp() {
 }
 
 /* ----------------------------------- CLI ---------------------------------- */
+
+// Parse --label=value or --label value from args
+function parseLabel(args: string[]): { label?: string; remaining: string[] } {
+  const remaining: string[] = [];
+  let label: string | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('--label=')) {
+      label = arg.slice(8);
+    } else if (arg === '--label' && i + 1 < args.length) {
+      label = args[++i];
+    } else {
+      remaining.push(arg);
+    }
+  }
+
+  return { label, remaining };
+}
+
 async function runCli() {
   const [cmd, ...rest] = process.argv.slice(3);
 
+  // Auth command: pnpm cli auth [email] [--label=work]
   if (cmd === 'auth') {
-    await getGoogle();
-    console.log('Authenticated with Google.');
+    const { label, remaining } = parseLabel(rest);
+    const emailHint = remaining[0];
+    await authenticateAccount(emailHint, label);
     return;
+  }
+
+  // Accounts command: pnpm cli accounts [list|remove|default]
+  if (cmd === 'accounts') {
+    const subcmd = rest[0];
+
+    if (!subcmd || subcmd === 'list') {
+      const accounts = await listAccounts();
+      if (accounts.length === 0) {
+        console.log('No accounts configured. Run: pnpm cli auth');
+        return;
+      }
+      console.log('Configured accounts:');
+      for (const acc of accounts) {
+        const defaultMarker = acc.isDefault ? ' [default]' : '';
+        const labelStr = acc.label ? ` (${acc.label})` : '';
+        console.log(`  ${acc.email}${labelStr}${defaultMarker}`);
+      }
+      return;
+    }
+
+    if (subcmd === 'remove') {
+      const email = rest[1];
+      if (!email) {
+        console.error('Usage: pnpm cli accounts remove <email>');
+        process.exit(1);
+      }
+      const removed = await removeAccount(email);
+      if (removed) {
+        console.log(`Removed account: ${email}`);
+      } else {
+        console.error(`Account not found: ${email}`);
+        process.exit(1);
+      }
+      return;
+    }
+
+    if (subcmd === 'default') {
+      const email = rest[1];
+      if (!email) {
+        console.error('Usage: pnpm cli accounts default <email>');
+        process.exit(1);
+      }
+      const success = await setDefaultAccount(email);
+      if (success) {
+        console.log(`Default account set to: ${email}`);
+      } else {
+        console.error(`Account not found: ${email}`);
+        process.exit(1);
+      }
+      return;
+    }
+
+    console.error(`Unknown accounts subcommand: ${subcmd}`);
+    console.log('Usage: pnpm cli accounts [list|remove|default]');
+    process.exit(1);
   }
 
   if (cmd === 'search') {
@@ -626,10 +785,13 @@ async function runCli() {
   }
 
   console.log(`Usage:
-  pnpm cli auth
-  pnpm cli search "alice"
-  pnpm cli find "Alice,Bob" 2025-10-09T09:00:00Z 2025-10-09T17:00:00Z
-  pnpm cli create "Design Sync" 2025-10-10T14:00:00Z 2025-10-10T14:30:00Z "Alice,bob@example.com"
+  pnpm cli auth [email] [--label=work]    Authenticate a Google account
+  pnpm cli accounts                        List configured accounts
+  pnpm cli accounts remove <email>         Remove an account
+  pnpm cli accounts default <email>        Set default account
+  pnpm cli search "alice"                  Search contacts
+  pnpm cli find "Alice,Bob" <start> <end>  Find common free slots
+  pnpm cli create "Title" <start> <end> "Alice,bob@example.com"
 
   Note: Attendees can be specified by name or email address.
 `);

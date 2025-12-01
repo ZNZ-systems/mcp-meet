@@ -22,9 +22,30 @@ export type GoogleClients = {
   calendar: ReturnType<typeof google.calendar>;
   people: ReturnType<typeof google.people>;
   auth: any;
+  email: string;
 };
 
-let cached: GoogleClients | null = null;
+// Multi-account token storage types
+type Credentials = {
+  access_token?: string;
+  refresh_token?: string;
+  expiry_date?: number;
+  token_type?: string;
+  scope?: string;
+};
+
+type AccountEntry = {
+  label?: string;
+  tokens: Credentials;
+};
+
+type TokenStore = {
+  accounts: Record<string, AccountEntry>;
+  defaultAccount: string | null;
+};
+
+// Cache clients per account email
+const clientCache = new Map<string, GoogleClients>();
 
 // -----------------------------------------------------------------------------
 // HELPER: Extract Meet URL from event
@@ -112,10 +133,22 @@ function isRetryableError(error: any): boolean {
 // -----------------------------------------------------------------------------
 // MAIN ENTRY: getGoogle()
 // -----------------------------------------------------------------------------
-export async function getGoogle(): Promise<GoogleClients> {
-  if (cached) {
-    // Check if tokens need refresh
-    await refreshTokensIfNeeded(cached.auth);
+export async function getGoogle(accountEmail?: string): Promise<GoogleClients> {
+  const store = await loadTokenStore();
+
+  // Determine which account to use
+  let targetEmail = accountEmail || store.defaultAccount;
+
+  // Handle legacy migration: if we have a _legacy_ account, try to identify it
+  if (targetEmail === '_legacy_' && store.accounts['_legacy_']) {
+    // We need to identify this account - will happen on first use
+    targetEmail = '_legacy_';
+  }
+
+  // Check cache first
+  if (targetEmail && clientCache.has(targetEmail)) {
+    const cached = clientCache.get(targetEmail)!;
+    await refreshTokensIfNeeded(cached.auth, targetEmail);
     return cached;
   }
 
@@ -130,33 +163,69 @@ export async function getGoogle(): Promise<GoogleClients> {
     GOOGLE_REDIRECT_URI
   );
 
-  const tokens = await loadTokens();
+  const tokens = targetEmail ? await loadTokens(targetEmail) : null;
+
   if (tokens) {
     oauth2.setCredentials(tokens);
-    // Set up automatic token refresh
+
+    // For legacy accounts, identify the email now
+    if (targetEmail === '_legacy_') {
+      const people = google.people({ version: 'v1', auth: oauth2 });
+      const actualEmail = await fetchAuthenticatedUserEmail(people);
+      if (actualEmail) {
+        // Migrate from _legacy_ to real email
+        await saveTokens(tokens, actualEmail, store.accounts['_legacy_']?.label);
+        targetEmail = actualEmail;
+        console.log(`✅ Migrated legacy account to ${actualEmail}`);
+      }
+    }
+
+    // Set up automatic token refresh with account context
+    const emailForRefresh = targetEmail!;
     oauth2.on('tokens', async (newTokens) => {
-      // Merge new tokens with existing ones
       const currentTokens = oauth2.credentials;
       const updatedTokens = { ...currentTokens, ...newTokens };
-      await saveTokens(updatedTokens);
+      await saveTokens(updatedTokens as Credentials, emailForRefresh);
     });
-    // Check if tokens need refresh on initial load
-    await refreshTokensIfNeeded(oauth2);
+
+    await refreshTokensIfNeeded(oauth2, targetEmail!);
   } else {
-    await interactiveAuth(oauth2);
+    // No tokens - need interactive auth
+    const result = await interactiveAuth(oauth2);
+    targetEmail = result.email;
   }
 
   const calendar = google.calendar({ version: 'v3', auth: oauth2 });
   const people = google.people({ version: 'v1', auth: oauth2 });
 
-  cached = { calendar, people, auth: oauth2 };
-  return cached;
+  const clients: GoogleClients = { calendar, people, auth: oauth2, email: targetEmail! };
+  clientCache.set(targetEmail!, clients);
+  return clients;
+}
+
+// Fetch the email of the authenticated user
+async function fetchAuthenticatedUserEmail(people: ReturnType<typeof google.people>): Promise<string | null> {
+  try {
+    const resp = await people.people.get({
+      resourceName: 'people/me',
+      personFields: 'emailAddresses'
+    });
+    const emails = resp.data.emailAddresses;
+    if (emails && emails.length > 0) {
+      // Prefer the primary email, otherwise use the first one
+      const primary = emails.find(e => e.metadata?.primary);
+      return (primary?.value || emails[0].value || '').toLowerCase();
+    }
+  } catch (error: any) {
+    console.warn('Failed to fetch user email:', error.message);
+  }
+  return null;
 }
 
 // -----------------------------------------------------------------------------
 // TOKEN REFRESH HELPER
 // -----------------------------------------------------------------------------
-async function refreshTokensIfNeeded(oauth2: any): Promise<void> {
+async function refreshTokensIfNeeded(oauth2: any, accountEmail: string): Promise<void> {
   const credentials = oauth2.credentials;
 
   // If no credentials or no expiry time, skip
@@ -171,14 +240,14 @@ async function refreshTokensIfNeeded(oauth2: any): Promise<void> {
 
   if (expiryTime - now < bufferTime) {
     try {
-      console.log('🔄 Refreshing expired access token...');
+      console.log(`🔄 Refreshing expired access token for ${accountEmail}...`);
       const { credentials: newCredentials } = await oauth2.refreshAccessToken();
       oauth2.setCredentials(newCredentials);
-      await saveTokens(newCredentials);
+      await saveTokens(newCredentials, accountEmail);
       console.log('✅ Access token refreshed successfully');
     } catch (error: any) {
       console.error('❌ Failed to refresh token:', error.message);
-      throw new Error('Token refresh failed. Please re-authenticate by running: pnpm cli auth');
+      throw new Error(`Token refresh failed for ${accountEmail}. Please re-authenticate by running: pnpm cli auth ${accountEmail}`);
     }
   }
 }
@@ -186,44 +255,113 @@ async function refreshTokensIfNeeded(oauth2: any): Promise<void> {
 // -----------------------------------------------------------------------------
 // INTERACTIVE AUTH FLOW
 // -----------------------------------------------------------------------------
-async function interactiveAuth(oauth2: any) {
+type AuthResult = { email: string; label?: string };
+
+async function interactiveAuth(oauth2: any, label?: string): Promise<AuthResult> {
   const authUrl = oauth2.generateAuthUrl({
     access_type: 'offline',
     scope: SCOPES,
     prompt: 'consent'
   });
 
+  console.log('🔐 Opening browser for Google authentication...');
   await open(authUrl);
 
-  const server = http.createServer(async (req, res) => {
-    try {
-      if (!req.url) return;
-      const url = new URL(req.url, process.env.GOOGLE_REDIRECT_URI);
-      const code = url.searchParams.get('code');
-      if (!code) return;
+  return new Promise<AuthResult>((resolveAuth, rejectAuth) => {
+    const server = http.createServer(async (req, res) => {
+      try {
+        if (!req.url) return;
+        const url = new URL(req.url, process.env.GOOGLE_REDIRECT_URI);
+        const code = url.searchParams.get('code');
+        if (!code) return;
 
-      const { tokens } = await oauth2.getToken(code);
-      oauth2.setCredentials(tokens);
-      await saveTokens(tokens);
+        const { tokens } = await oauth2.getToken(code);
+        oauth2.setCredentials(tokens);
 
-      res.writeHead(200, { 'Content-Type': 'text/plain' });
-      res.end('✅ Google authentication complete. You can close this tab.');
-      server.close();
-    } catch (e: any) {
-      res.writeHead(500);
-      res.end(e?.message || 'Auth error');
-      server.close();
-    }
-  });
+        // Fetch the authenticated user's email
+        const people = google.people({ version: 'v1', auth: oauth2 });
+        const email = await fetchAuthenticatedUserEmail(people);
 
-  await new Promise<void>((resolve) => {
+        if (!email) {
+          res.writeHead(500);
+          res.end('❌ Failed to determine your email address. Please try again.');
+          server.close();
+          rejectAuth(new Error('Could not determine authenticated user email'));
+          return;
+        }
+
+        // Save tokens with the actual email
+        await saveTokens(tokens, email, label);
+
+        // Set up automatic token refresh with account context
+        oauth2.on('tokens', async (newTokens: any) => {
+          const currentTokens = oauth2.credentials;
+          const updatedTokens = { ...currentTokens, ...newTokens };
+          await saveTokens(updatedTokens as Credentials, email);
+        });
+
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(`
+          <html>
+            <body style="font-family: system-ui; padding: 40px; text-align: center;">
+              <h1>✅ Authentication Complete</h1>
+              <p>Signed in as <strong>${email}</strong>${label ? ` (${label})` : ''}</p>
+              <p>You can close this tab.</p>
+            </body>
+          </html>
+        `);
+        server.close();
+        resolveAuth({ email, label });
+      } catch (e: any) {
+        res.writeHead(500);
+        res.end(e?.message || 'Auth error');
+        server.close();
+        rejectAuth(e);
+      }
+    });
+
     const port = new URL(process.env.GOOGLE_REDIRECT_URI!).port || '5173';
-    server.listen(Number(port), () => resolve());
+    server.listen(Number(port), () => {
+      console.log(`Waiting for OAuth callback on port ${port}...`);
+    });
   });
 }
 
+// Auth entry point for CLI (with optional email hint and label)
+export async function authenticateAccount(emailHint?: string, label?: string): Promise<AuthResult> {
+  const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI } = process.env;
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI) {
+    throw new Error('Missing Google OAuth env vars');
+  }
+
+  const oauth2 = new google.auth.OAuth2(
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI
+  );
+
+  // If emailHint is provided and we already have tokens for that account, just verify
+  if (emailHint) {
+    const existingTokens = await loadTokens(emailHint);
+    if (existingTokens) {
+      console.log(`Account ${emailHint} is already authenticated.`);
+      // Update label if provided
+      if (label) {
+        await saveTokens(existingTokens, emailHint, label);
+        console.log(`Updated label to "${label}"`);
+      }
+      return { email: emailHint, label };
+    }
+  }
+
+  // Run interactive auth
+  const result = await interactiveAuth(oauth2, label);
+  console.log(`\n✅ Authenticated as ${result.email}${result.label ? ` (${result.label})` : ''}`);
+  return result;
+}
+
 // -----------------------------------------------------------------------------
-// TOKEN STORAGE (global location)
+// TOKEN STORAGE (multi-account)
 // -----------------------------------------------------------------------------
 function cfgDir() {
   const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
@@ -231,30 +369,200 @@ function cfgDir() {
 }
 const TOK_PATH = path.join(cfgDir(), 'tokens.json');
 
-async function loadTokens() {
+// Check if data is old flat format (has access_token at root)
+function isLegacyFormat(data: any): boolean {
+  return data && typeof data === 'object' && 'access_token' in data && !('accounts' in data);
+}
+
+// Load the full token store (handles migration from legacy format)
+async function loadTokenStore(): Promise<TokenStore> {
   try {
     const s = await fs.readFile(TOK_PATH, 'utf-8');
-    return JSON.parse(s);
+    const data = JSON.parse(s);
+
+    // Migrate legacy single-account format
+    if (isLegacyFormat(data)) {
+      console.log('🔄 Migrating legacy token format to multi-account...');
+      // We'll determine the email during auth, for now use placeholder
+      const store: TokenStore = {
+        accounts: {
+          '_legacy_': { tokens: data }
+        },
+        defaultAccount: '_legacy_'
+      };
+      return store;
+    }
+
+    return data as TokenStore;
   } catch (error: any) {
     if (error.code === 'ENOENT') {
-      // File doesn't exist, user needs to authenticate
-      return null;
+      return { accounts: {}, defaultAccount: null };
     }
-    // Log other errors for debugging
     console.warn(`Failed to load tokens from ${TOK_PATH}:`, error.message);
-    return null;
+    return { accounts: {}, defaultAccount: null };
   }
 }
 
-async function saveTokens(tokens: any) {
+// Save the full token store
+async function saveTokenStore(store: TokenStore): Promise<void> {
   try {
     await fs.mkdir(cfgDir(), { recursive: true });
-    await fs.writeFile(TOK_PATH, JSON.stringify(tokens, null, 2));
-    console.error(`✅ Tokens saved to ${TOK_PATH}`);
+    await fs.writeFile(TOK_PATH, JSON.stringify(store, null, 2));
   } catch (error: any) {
     console.error(`❌ Failed to save tokens to ${TOK_PATH}:`, error.message);
     throw new Error(`Token save failed: ${error.message}`);
   }
+}
+
+// Load tokens for a specific account (or default)
+async function loadTokens(email?: string): Promise<Credentials | null> {
+  const store = await loadTokenStore();
+  const targetEmail = email || store.defaultAccount;
+  if (!targetEmail) return null;
+  return store.accounts[targetEmail]?.tokens || null;
+}
+
+// Save tokens for a specific account
+async function saveTokens(tokens: Credentials, email: string, label?: string): Promise<void> {
+  const store = await loadTokenStore();
+
+  // Remove legacy placeholder if it exists and we're saving a real account
+  if (store.accounts['_legacy_'] && email !== '_legacy_') {
+    delete store.accounts['_legacy_'];
+    if (store.defaultAccount === '_legacy_') {
+      store.defaultAccount = email;
+    }
+  }
+
+  store.accounts[email] = {
+    label: label || store.accounts[email]?.label,
+    tokens
+  };
+
+  // Set as default if it's the first account
+  if (!store.defaultAccount || store.defaultAccount === '_legacy_') {
+    store.defaultAccount = email;
+  }
+
+  await saveTokenStore(store);
+  console.error(`✅ Tokens saved for ${email}`);
+}
+
+// List all configured accounts
+export async function listAccounts(): Promise<{ email: string; label?: string; isDefault: boolean }[]> {
+  const store = await loadTokenStore();
+  return Object.entries(store.accounts)
+    .filter(([email]) => email !== '_legacy_')
+    .map(([email, entry]) => ({
+      email,
+      label: entry.label,
+      isDefault: email === store.defaultAccount
+    }));
+}
+
+// Remove an account
+export async function removeAccount(email: string): Promise<boolean> {
+  const store = await loadTokenStore();
+  if (!store.accounts[email]) {
+    return false;
+  }
+  delete store.accounts[email];
+  clientCache.delete(email);
+
+  // Update default if we removed the default account
+  if (store.defaultAccount === email) {
+    const remaining = Object.keys(store.accounts).filter(e => e !== '_legacy_');
+    store.defaultAccount = remaining[0] || null;
+  }
+
+  await saveTokenStore(store);
+  return true;
+}
+
+// Set the default account
+export async function setDefaultAccount(email: string): Promise<boolean> {
+  const store = await loadTokenStore();
+  if (!store.accounts[email]) {
+    return false;
+  }
+  store.defaultAccount = email;
+  await saveTokenStore(store);
+  return true;
+}
+
+// Get the default account email
+export async function getDefaultAccount(): Promise<string | null> {
+  const store = await loadTokenStore();
+  return store.defaultAccount;
+}
+
+// Resolve account hint (email or label) to email
+export async function resolveAccountHint(hint: string): Promise<string | null> {
+  const store = await loadTokenStore();
+
+  // Direct email match
+  if (store.accounts[hint]) {
+    return hint;
+  }
+
+  // Label match
+  for (const [email, entry] of Object.entries(store.accounts)) {
+    if (entry.label?.toLowerCase() === hint.toLowerCase()) {
+      return email;
+    }
+  }
+
+  return null;
+}
+
+// Resolve which account to use based on hint and/or attendee domains
+export async function resolveAccount(
+  hint?: string,
+  attendeeEmails?: string[]
+): Promise<string | null> {
+  const store = await loadTokenStore();
+  const accounts = Object.entries(store.accounts).filter(([e]) => e !== '_legacy_');
+
+  if (accounts.length === 0) {
+    return null;
+  }
+
+  // 1. If hint provided, resolve it
+  if (hint) {
+    const resolved = await resolveAccountHint(hint);
+    if (resolved) return resolved;
+    // Hint didn't match any account — continue with inference
+    console.warn(`Account hint "${hint}" not found, using inference...`);
+  }
+
+  // 2. If only one account, use it
+  if (accounts.length === 1) {
+    return accounts[0][0];
+  }
+
+  // 3. Domain matching: find account whose domain matches most attendees
+  if (attendeeEmails && attendeeEmails.length > 0) {
+    const domainCounts = new Map<string, number>();
+
+    // Count attendee domains
+    for (const email of attendeeEmails) {
+      const domain = email.split('@')[1]?.toLowerCase();
+      if (domain) {
+        domainCounts.set(domain, (domainCounts.get(domain) || 0) + 1);
+      }
+    }
+
+    // Find account with matching domain
+    for (const [accountEmail] of accounts) {
+      const accountDomain = accountEmail.split('@')[1]?.toLowerCase();
+      if (accountDomain && domainCounts.has(accountDomain)) {
+        return accountEmail;
+      }
+    }
+  }
+
+  // 4. Fall back to default account
+  return store.defaultAccount;
 }
 
 // -----------------------------------------------------------------------------
