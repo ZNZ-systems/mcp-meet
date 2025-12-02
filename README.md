@@ -18,19 +18,23 @@ If like me you hate running google apps locally because they kill your battery l
 
 ## How it works
 
+### Account Tools
+
+1. **`list_accounts`** - List all configured Google accounts with their labels
+
 ### Scheduling Tools
 
-1. **`search_invitees`** - Search your Google Contacts to find email addresses
-2. **`find_slots`** - Get a list of common free time slots across all attendees
-3. **`create_meet_and_calendar`** - Create a Google Calendar event with Meet link and mirror to Apple Calendar
-4. **`plan_and_schedule`** - The smart one: finds the first available slot that fits your duration and books it instantly
+2. **`search_invitees`** - Search your Google Contacts to find email addresses
+3. **`find_slots`** - Get a list of common free time slots across all attendees
+4. **`create_meet_and_calendar`** - Create a Google Calendar event with Meet link and mirror to Apple Calendar
+5. **`plan_and_schedule`** - The smart one: finds the first available slot that fits your duration and books it instantly
 
 ### Meeting Management Tools
 
-5. **`list_meetings`** - List all upcoming Google Meet meetings in a time window
-6. **`get_meeting_details`** - Get detailed information about a specific meeting by ID
-7. **`update_meeting`** - Update meeting title, time, description, or attendees (syncs to Apple Calendar)
-8. **`delete_meeting`** - Delete a meeting from both Google and Apple Calendar
+6. **`list_meetings`** - List all upcoming Google Meet meetings in a time window
+7. **`get_meeting_details`** - Get detailed information about a specific meeting by ID
+8. **`update_meeting`** - Update meeting title, time, description, or attendees (syncs to Apple Calendar)
+9. **`delete_meeting`** - Delete a meeting from both Google and Apple Calendar
 
 ## Setup
 
@@ -109,6 +113,32 @@ pnpm dev
 
 Your MCP client (like Claude Desktop) can then call the available tools.
 
+### Claude Desktop / Claude Code Configuration
+
+Add to your MCP settings (`claude_desktop_config.json` or `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "mcp-meet": {
+      "command": "npx",
+      "args": ["-y", "mcp-meet"]
+    }
+  }
+}
+```
+
+Or if installed globally:
+
+```json
+{
+  "mcpServers": {
+    "mcp-meet": {
+      "command": "mcp-meet"
+    }
+  }
+}
+```
 
 ## License
 
