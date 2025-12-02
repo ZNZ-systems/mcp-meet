@@ -1,6 +1,6 @@
 {
   "name": "mcp-meet",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "MCP server for one-click Google Meet scheduling and Apple Calendar mirroring",
   "type": "module",
   "private": false,
@@ -22,11 +22,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/znz-systems/mcp-meet.git"
+    "url": "git+https://github.com/ZNZ-systems/mcp-meet.git"
   },
-  "homepage": "https://github.com/znz-systems/mcp-meet#readme",
+  "homepage": "https://github.com/ZNZ-systems/mcp-meet#readme",
   "bugs": {
-    "url": "https://github.com/znz-systems/mcp-meet/issues"
+    "url": "https://github.com/ZNZ-systems/mcp-meet/issues"
   },
   "author": "Panos Zepos <panos@znzsystems.com>",
   "license": "MIT",
