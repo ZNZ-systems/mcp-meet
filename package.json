@@ -1,6 +1,6 @@
 {
   "name": "mcp-meet",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "MCP server for one-click Google Meet scheduling and Apple Calendar mirroring",
   "type": "module",
   "private": false,
