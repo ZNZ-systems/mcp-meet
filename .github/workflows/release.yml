@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
   id-token: write
 
 jobs:
@@ -45,38 +44,4 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  publish-github:
-    name: Publish to GitHub Packages
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 20
-          cache: 'pnpm'
-          registry-url: 'https://npm.pkg.github.com'
-          scope: '@znz-systems'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm run build
-
-      - name: Prepare CLI wrapper
-        run: node scripts/make-cli-wrapper.mjs
-
-      - name: Publish to GitHub Packages
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
